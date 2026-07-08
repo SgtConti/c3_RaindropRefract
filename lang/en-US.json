@@ -1,44 +1,20 @@
 {
   "languageTag": "en-US",
-  "fileDescription": "Strings for the 'Raindrop Refraction (WebGPU)' effect.",
+  "fileDescription": "Strings for the 'Raindrop Refraction' effect.",
   "text": {
     "effects": {
-      "gpt5_raindroprefract": {
-        "name": "Raindrop Refraction (WebGPU)",
-        "description": "Procedural raindrop distortion/refraction overlay.",
+      "sgtconti_raindrop_refract": {
+        "name": "Raindrop Refraction",
+        "description": "Procedural falling raindrop refraction with adjustable density, drop size, wind, fall speed and distortion strength. Supports WebGL and WebGPU.",
         "parameters": {
-          "density": {
-            "name": "Density",
-            "desc": "How many drops appear (0\u2013100%)."
-          },
-          "size": {
-            "name": "Size (px)",
-            "desc": "Approximate drop radius in pixels (does not change frequency)."
-          },
-          "speed": {
-            "name": "Speed",
-            "desc": "Animation speed multiplier."
-          },
-          "randomMag": {
-            "name": "Randomness",
-            "desc": "Random variation/jitter amount."
-          },
-          "strength": {
-            "name": "Strength",
-            "desc": "Refraction/distortion strength."
-          },
-          "blurLod": {
-            "name": "Base blur LOD",
-            "desc": "LOD used for the undistorted base sample (higher = blurrier)."
-          },
-          "seed": {
-            "name": "Seed",
-            "desc": "Offsets the random pattern. Animate for variety."
-          },
-          "windX": {
-            "name": "Wind X",
-            "desc": "Horizontal drift (negative=left, positive=right)."
-          }
+          "density": {"name": "Density", "desc": "Chance of raindrops per cell."},
+          "size": {"name": "Size", "desc": "Approximate drop cell size in pixels."},
+          "speed": {"name": "Speed", "desc": "Fall speed multiplier."},
+          "randomMag": {"name": "Randomness", "desc": "Random position jitter and wobble amount."},
+          "windX": {"name": "Wind X", "desc": "Horizontal wind drift in pixels per second."},
+          "strength": {"name": "Strength", "desc": "Refraction strength."},
+          "blurLod": {"name": "Blur LOD", "desc": "Texture LOD used for the refracted sample in WebGPU."},
+          "seed": {"name": "Seed", "desc": "Offsets the random pattern."}
         }
       }
     }

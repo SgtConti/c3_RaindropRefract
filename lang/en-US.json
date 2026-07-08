@@ -1,0 +1,46 @@
+{
+  "languageTag": "en-US",
+  "fileDescription": "Strings for the 'Raindrop Refraction (WebGPU)' effect.",
+  "text": {
+    "effects": {
+      "gpt5_raindroprefract": {
+        "name": "Raindrop Refraction (WebGPU)",
+        "description": "Procedural raindrop distortion/refraction overlay.",
+        "parameters": {
+          "density": {
+            "name": "Density",
+            "desc": "How many drops appear (0\u2013100%)."
+          },
+          "size": {
+            "name": "Size (px)",
+            "desc": "Approximate drop radius in pixels (does not change frequency)."
+          },
+          "speed": {
+            "name": "Speed",
+            "desc": "Animation speed multiplier."
+          },
+          "randomMag": {
+            "name": "Randomness",
+            "desc": "Random variation/jitter amount."
+          },
+          "strength": {
+            "name": "Strength",
+            "desc": "Refraction/distortion strength."
+          },
+          "blurLod": {
+            "name": "Base blur LOD",
+            "desc": "LOD used for the undistorted base sample (higher = blurrier)."
+          },
+          "seed": {
+            "name": "Seed",
+            "desc": "Offsets the random pattern. Animate for variety."
+          },
+          "windX": {
+            "name": "Wind X",
+            "desc": "Horizontal drift (negative=left, positive=right)."
+          }
+        }
+      }
+    }
+  }
+}

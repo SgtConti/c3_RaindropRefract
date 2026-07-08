@@ -1,0 +1,82 @@
+{
+  "is-c3-addon": true,
+  "sdk-version": 2,
+  "type": "effect",
+  "name": "Raindrop Refraction (WebGPU)",
+  "id": "GPT5_RaindropRefract",
+  "version": "1.0.4.7",
+  "author": "ChatGPT",
+  "website": "https://construct.net",
+  "documentation": "https://www.construct.net/en/make-games/manuals/addon-sdk/guide/configuring-effects",
+  "description": "Procedural raindrop refraction/distortion effect based on layered grid drops. WebGL + WebGPU.",
+  "category": "other",
+  "supported-renderers": [
+    "webgl",
+    "webgpu"
+  ],
+  "blends-background": true,
+  "uses-depth": false,
+  "cross-sampling": false,
+  "preserves-opaqueness": false,
+  "animated": true,
+  "must-predraw": true,
+  "supports-3d-direct-rendering": true,
+  "parameters": [
+    {
+      "id": "density",
+      "type": "percent",
+      "initial-value": 0.35,
+      "uniform": "uDensity",
+      "interpolatable": true
+    },
+    {
+      "id": "size",
+      "type": "float",
+      "initial-value": 48.0,
+      "uniform": "uSize",
+      "interpolatable": true
+    },
+    {
+      "id": "speed",
+      "type": "float",
+      "initial-value": 1.0,
+      "uniform": "uSpeed",
+      "interpolatable": true
+    },
+    {
+      "id": "randomMag",
+      "type": "float",
+      "initial-value": 1.0,
+      "uniform": "uRandomMag",
+      "interpolatable": true
+    },
+    {
+      "id": "windX",
+      "type": "float",
+      "initial-value": 0.0,
+      "uniform": "uWindX",
+      "interpolatable": true
+    },
+    {
+      "id": "strength",
+      "type": "float",
+      "initial-value": 1.0,
+      "uniform": "uStrength",
+      "interpolatable": true
+    },
+    {
+      "id": "blurLod",
+      "type": "float",
+      "initial-value": 1.5,
+      "uniform": "uBlurLod",
+      "interpolatable": true
+    },
+    {
+      "id": "seed",
+      "type": "float",
+      "initial-value": 0.0,
+      "uniform": "uSeed",
+      "interpolatable": true
+    }
+  ]
+}

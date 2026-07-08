@@ -47,8 +47,10 @@ void addDrop(vec2 p, vec2 id, vec2 f, float cell, inout float mask, inout vec2 n
     vec2 d = f - center;
     float sx = 0.20 + 0.18 * h.x;
     float sy = 0.65 + 0.50 * h.y;
-    float body = smoothstep(1.0, 0.2, length(vec2(d.x / sx, d.y / sy)));
-    float trail = smoothstep(0.18, 0.0, abs(d.x)) * smoothstep(1.5, -0.4, d.y) * smoothstep(-0.25, 0.25, d.y);
+    float body = 1.0 - smoothstep(0.2, 1.0, length(vec2(d.x / sx, d.y / sy)));
+    float trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
+    float trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
+    float trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
     float a = active * max(body, trail * 0.42);
     mask = max(mask, a);
     normal += a * normalize(vec2(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2(0.0001));
@@ -70,7 +72,8 @@ void main(void){
             addDrop(p, g + vec2(float(ox), float(oy)), f - vec2(float(ox), float(oy)), cell, mask, normal);
         }
     }
-    normal *= pixelSize * (8.0 + uSize * 0.18) * clamp(uStrength, 0.0, 1.0);
+    float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
+    normal *= pixelSize * (8.0 + uSize * 0.18) * clamp(uStrength, 0.0, 1.0) * lodBoost;
     vec4 base = sampleBase(vTex);
     vec4 refr = sampleBase(vTex + normal);
     vec3 rgb = mix(base.rgb, refr.rgb, clamp(mask, 0.0, 1.0));

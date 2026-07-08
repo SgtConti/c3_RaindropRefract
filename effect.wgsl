@@ -44,8 +44,10 @@ fn addDrop(id: vec2<f32>, f: vec2<f32>, mask0: f32, normal0: vec2<f32>) -> vec3<
     let d = f - center;
     let sx = 0.20 + 0.18 * h.x;
     let sy = 0.65 + 0.50 * h.y;
-    let body = smoothstep(1.0, 0.2, length(vec2<f32>(d.x / sx, d.y / sy)));
-    let trail = smoothstep(0.18, 0.0, abs(d.x)) * smoothstep(1.5, -0.4, d.y) * smoothstep(-0.25, 0.25, d.y);
+    let body = 1.0 - smoothstep(0.2, 1.0, length(vec2<f32>(d.x / sx, d.y / sy)));
+    let trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
+    let trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
+    let trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
     let a = active * max(body, trail * 0.42);
     let n = a * normalize(vec2<f32>(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2<f32>(0.0001));
     return vec3<f32>(max(mask0, a), normal0.x + n.x, normal0.y + n.y);

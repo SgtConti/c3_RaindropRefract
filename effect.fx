@@ -40,7 +40,7 @@ vec4 sampleBase(vec2 uv){
 }
 
 void addDrop(vec2 p, vec2 id, vec2 f, float cell, inout float mask, inout vec2 normal){
-    float active = step(hash12(id + uSeed * 17.0), clamp(uDensity, 0.0, 1.0) * 0.33);
+    float dropOn = step(hash12(id + uSeed * 17.0), clamp(uDensity, 0.0, 1.0) * 0.33);
     vec2 h = hash22(id + uSeed * 3.1);
     vec2 center = h - 0.5;
     center.x += sin(seconds * 1.7 + h.y * 6.28318) * 0.10 * uRandomMag;
@@ -51,7 +51,7 @@ void addDrop(vec2 p, vec2 id, vec2 f, float cell, inout float mask, inout vec2 n
     float trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
     float trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
     float trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
-    float a = active * max(body, trail * 0.42);
+    float a = dropOn * max(body, trail * 0.42);
     mask = max(mask, a);
     normal += a * normalize(vec2(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2(0.0001));
 }

@@ -37,7 +37,7 @@ fn sampleBase(uv: vec2<f32>) -> vec4<f32> {
     return front + back * (1.0 - front.a);
 }
 fn addDrop(id: vec2<f32>, f: vec2<f32>, mask0: f32, normal0: vec2<f32>) -> vec3<f32> {
-    let active = select(0.0, 1.0, hash12(id + vec2<f32>(shaderParams.seed * 17.0)) <= clamp(shaderParams.density, 0.0, 1.0) * 0.33);
+    let dropOn = select(0.0, 1.0, hash12(id + vec2<f32>(shaderParams.seed * 17.0)) <= clamp(shaderParams.density, 0.0, 1.0) * 0.33);
     let h = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
     var center = h - vec2<f32>(0.5);
     center.x = center.x + sin(c3Params.seconds * 1.7 + h.y * 6.28318) * 0.10 * shaderParams.randomMag;
@@ -48,7 +48,7 @@ fn addDrop(id: vec2<f32>, f: vec2<f32>, mask0: f32, normal0: vec2<f32>) -> vec3<
     let trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
     let trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
     let trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
-    let a = active * max(body, trail * 0.42);
+    let a = dropOn * max(body, trail * 0.42);
     let n = a * normalize(vec2<f32>(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2<f32>(0.0001));
     return vec3<f32>(max(mask0, a), normal0.x + n.x, normal0.y + n.y);
 }

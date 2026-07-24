@@ -22,38 +22,150 @@ uniform float uWindX;
 uniform float uStrength;
 uniform float uBlurLod;
 uniform float uSeed;
+uniform float uVariation;
+uniform float uSmear;
+
+const float TAU = 6.28318530718;
 
 float hash12(vec2 p){
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+
 vec2 hash22(vec2 p){
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
 }
+
+vec2 safeNormalize(vec2 v){
+    return v * inversesqrt(max(dot(v, v), 1e-8));
+}
+
 vec4 sampleBase(vec2 uv){
     vec4 front = texture2D(samplerFront, uv);
     vec4 back = texture2D(samplerBack, uv);
     return front + back * (1.0 - front.a);
 }
 
-void addDrop(vec2 p, vec2 id, vec2 f, float cell, inout float mask, inout vec2 normal){
-    float dropOn = step(hash12(id + uSeed * 17.0), clamp(uDensity, 0.0, 1.0) * 0.33);
-    vec2 h = hash22(id + uSeed * 3.1);
-    vec2 center = h - 0.5;
-    center.x += sin(seconds * 1.7 + h.y * 6.28318) * 0.10 * uRandomMag;
+void addDrop(
+    vec2 id,
+    vec2 f,
+    inout float mask,
+    inout vec2 normal,
+    inout float shine
+){
+    float density = clamp(uDensity, 0.0, 1.0);
+    float variation = clamp(uVariation, 0.0, 1.0);
+    float smearAmount = clamp(uSmear, 0.0, 1.0);
+    float dropOn = step(hash12(id + vec2(uSeed * 17.0)), density * 0.33);
+
+    vec2 h0 = hash22(id + vec2(uSeed * 3.1));
+    vec2 h1 = hash22(id.yx + vec2(19.7, 7.3) + vec2(uSeed * 5.7));
+    vec2 h2 = hash22(id + vec2(41.2, 13.9) + vec2(uSeed * 11.3));
+
+    vec2 center = h0 - 0.5;
+    center.x += sin(
+        seconds * mix(0.45, 0.85, h1.x) + h2.y * TAU
+    ) * 0.035 * uRandomMag;
+
     vec2 d = f - center;
-    float sx = 0.20 + 0.18 * h.x;
-    float sy = 0.65 + 0.50 * h.y;
-    float body = 1.0 - smoothstep(0.2, 1.0, length(vec2(d.x / sx, d.y / sy)));
-    float trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
-    float trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
-    float trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
-    float a = dropOn * max(body, trail * 0.42);
+    float sizeKey = h1.y * h1.y;
+    float runner = smoothstep(0.54, 0.84, h2.x)
+        * smoothstep(0.24, 0.62, sizeKey);
+    float sx = mix(0.105, 0.31, sizeKey);
+    float sy = sx * mix(0.92, 1.34, h0.y);
+    sx *= mix(1.0, 0.88, runner * variation);
+    sy *= mix(1.0, mix(1.35, 1.82, h1.x), runner * variation);
+
+    float yUnit = clamp(d.y / max(sy, 0.01), -1.0, 1.0);
+    float sideScale = 1.0
+        + yUnit * mix(0.06, 0.19, runner) * variation;
+    float centerBend = (h2.y - 0.5) * 0.032
+        * (1.0 - abs(yUnit)) * variation;
+    vec2 bodyUv = vec2(
+        (d.x - centerBend) / max(sx * sideScale, 0.01),
+        d.y / max(sy, 0.01)
+    );
+    float surface = 1.0 + variation * (
+        sin(bodyUv.y * 4.0 + h0.x * TAU) * 0.018
+        + sin((bodyUv.x - bodyUv.y) * 6.0 + h2.y * TAU) * 0.012
+    );
+    float bodyDist = length(bodyUv) / max(surface, 0.90);
+    float body = 1.0 - smoothstep(0.70, 1.0, bodyDist);
+
+    float smearClass = max(
+        runner,
+        smoothstep(0.72, 0.96, h0.x)
+            * smoothstep(0.38, 0.68, sizeKey) * 0.45
+    );
+    float trailLength = mix(0.12, 1.34, smearClass)
+        * mix(0.25, 1.15, smearAmount);
+    float behind = -d.y - sy * 0.18;
+    float trailProgress = clamp(
+        behind / max(trailLength, 0.01),
+        0.0,
+        1.0
+    );
+    float trailGate = smoothstep(-0.03, 0.04, behind)
+        * (1.0 - smoothstep(0.80, 1.0, trailProgress));
+    float curve = clamp(uWindX * 0.0015, -0.05, 0.05)
+        * trailProgress;
+    curve += (h0.x - 0.5) * 0.025
+        * trailProgress * variation;
+    curve += sin(trailProgress * TAU + h2.y * TAU)
+        * 0.015 * trailProgress * variation;
+    float trailX = d.x - curve;
+    float widthAtY = max(
+        0.018,
+        mix(sx * 0.40, 0.018, trailProgress)
+    );
+    widthAtY *= 1.0 + sin(
+        trailProgress * mix(8.0, 13.0, h1.x) + h0.y * TAU
+    ) * 0.10 * variation;
+    float trailCore = 1.0 - smoothstep(
+        widthAtY * 0.22,
+        widthAtY,
+        abs(trailX)
+    );
+    float wetFilm = 1.0 - smoothstep(
+        widthAtY,
+        widthAtY * 2.15,
+        abs(trailX)
+    );
+    float trailWeight = mix(0.055, 0.58, smearClass)
+        * smearAmount;
+    float trail = trailGate
+        * (trailCore * 0.78 + wetFilm * 0.16)
+        * trailWeight;
+
+    float a = dropOn * max(body, trail);
     mask = max(mask, a);
-    normal += a * normalize(vec2(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2(0.0001));
+
+    vec2 bodyNormal = safeNormalize(vec2(
+        (d.x - centerBend) / max(sx * sx, 0.001),
+        d.y / max(sy * sy, 0.001)
+    ));
+    vec2 trailNormal = safeNormalize(vec2(
+        trailX / max(widthAtY * widthAtY, 0.001),
+        -0.08
+    ));
+    vec2 dropNormal = bodyNormal * body + trailNormal * trail;
+    normal += dropOn * safeNormalize(dropNormal)
+        * max(body, trail) * mix(0.78, 1.18, sizeKey);
+
+    float rim = smoothstep(0.58, 0.84, bodyDist)
+        * (1.0 - smoothstep(0.89, 1.03, bodyDist));
+    float glint = 1.0 - smoothstep(
+        0.07,
+        0.24,
+        length(bodyUv - vec2(-0.34, -0.34))
+    );
+    shine = max(
+        shine,
+        dropOn * body * (rim * 0.34 + glint * 0.72)
+    );
 }
 
 void main(void){
@@ -67,16 +179,21 @@ void main(void){
     vec2 f = fract(p / cell) - 0.5;
     float mask = 0.0;
     vec2 normal = vec2(0.0);
+    float shine = 0.0;
+
     for (int oy = -1; oy <= 1; oy++){
         for (int ox = -1; ox <= 1; ox++){
-            addDrop(p, g + vec2(float(ox), float(oy)), f - vec2(float(ox), float(oy)), cell, mask, normal);
+            vec2 offset = vec2(float(ox), float(oy));
+            addDrop(g + offset, f - offset, mask, normal, shine);
         }
     }
+
     float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
-    normal *= pixelSize * (8.0 + uSize * 0.18) * clamp(uStrength, 0.0, 1.0) * lodBoost;
+    normal *= pixelSize * (8.0 + uSize * 0.18)
+        * clamp(uStrength, 0.0, 1.0) * lodBoost;
     vec4 base = sampleBase(vTex);
     vec4 refr = sampleBase(vTex + normal);
     vec3 rgb = mix(base.rgb, refr.rgb, clamp(mask, 0.0, 1.0));
-    rgb += vec3(mask * 0.035);
+    rgb += vec3(shine * 0.075 + mask * 0.010);
     gl_FragColor = vec4(rgb, max(base.a, mask * 0.2));
 }

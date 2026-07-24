@@ -9,7 +9,11 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 ## Features
 
 - Procedural falling drops; no texture dependency.
-- Adjustable density, size, speed, randomness, wind, refraction strength, blur LOD and seed.
+- Many small round beads, fewer pear-shaped runners and rare larger drops.
+- Gravity-aligned wet tracks behind runners, with restrained width and curvature variation.
+- No random per-drop rotation; drop orientation remains consistent with gravity.
+- Refractive rims and small upper highlights for a wet-window look.
+- Adjustable density, size, speed, randomness, wind, refraction strength, blur LOD, seed, drop variation and smear amount.
 - Background sampling for refracted scene content.
 - Uses layout-space coordinates so drops follow layer scrolling.
 
@@ -25,6 +29,8 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 | Strength | Refraction strength. |
 | Blur LOD | Texture LOD used for the refracted sample in WebGPU. |
 | Seed | Offsets the random pattern. |
+| Drop Variation | Natural variation in bead size, roundness and vertical pear-shaped runners. |
+| Smear | Amount and reach of soft, gravity-aligned wet tracks behind moving drops. |
 
 ## Suggested layer setup
 

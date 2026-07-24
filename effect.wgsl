@@ -17,66 +17,234 @@ struct ShaderParams {
     windX: f32,
     strength: f32,
     blurLod: f32,
-    seed: f32
+    seed: f32,
+    variation: f32,
+    smear: f32
 };
 %%SHADERPARAMS_BINDING%% var<uniform> shaderParams: ShaderParams;
+
+const TAU: f32 = 6.28318530718;
 
 fn hash12(p: vec2<f32>) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
     p3 = p3 + dot(p3, p3.yzx + vec3<f32>(33.33));
     return fract((p3.x + p3.y) * p3.z);
 }
+
 fn hash22(p: vec2<f32>) -> vec2<f32> {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
     p3 = p3 + dot(p3, p3.yzx + vec3<f32>(33.33));
     return fract((p3.xx + p3.yz) * p3.zy);
 }
+
+fn safeNormalize(v: vec2<f32>) -> vec2<f32> {
+    return v * inverseSqrt(max(dot(v, v), 1e-8));
+}
+
 fn sampleBase(uv: vec2<f32>) -> vec4<f32> {
-    let front = textureSampleLevel(textureFront, samplerFront, uv, shaderParams.blurLod);
-    let back = textureSampleLevel(textureBack, samplerBack, uv, shaderParams.blurLod);
+    let front = textureSampleLevel(
+        textureFront,
+        samplerFront,
+        uv,
+        shaderParams.blurLod
+    );
+    let back = textureSampleLevel(
+        textureBack,
+        samplerBack,
+        uv,
+        shaderParams.blurLod
+    );
     return front + back * (1.0 - front.a);
 }
-fn addDrop(id: vec2<f32>, f: vec2<f32>, mask0: f32, normal0: vec2<f32>) -> vec3<f32> {
-    let dropOn = select(0.0, 1.0, hash12(id + vec2<f32>(shaderParams.seed * 17.0)) <= clamp(shaderParams.density, 0.0, 1.0) * 0.33);
-    let h = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
-    var center = h - vec2<f32>(0.5);
-    center.x = center.x + sin(c3Params.seconds * 1.7 + h.y * 6.28318) * 0.10 * shaderParams.randomMag;
+
+fn addDrop(
+    id: vec2<f32>,
+    f: vec2<f32>,
+    mask0: f32,
+    normal0: vec2<f32>,
+    shine0: f32
+) -> vec4<f32> {
+    let density = clamp(shaderParams.density, 0.0, 1.0);
+    let variation = clamp(shaderParams.variation, 0.0, 1.0);
+    let smearAmount = clamp(shaderParams.smear, 0.0, 1.0);
+    let dropOn = select(
+        0.0,
+        1.0,
+        hash12(id + vec2<f32>(shaderParams.seed * 17.0)) <= density * 0.33
+    );
+
+    let h0 = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
+    let h1 = hash22(
+        id.yx + vec2<f32>(19.7, 7.3)
+            + vec2<f32>(shaderParams.seed * 5.7)
+    );
+    let h2 = hash22(
+        id + vec2<f32>(41.2, 13.9)
+            + vec2<f32>(shaderParams.seed * 11.3)
+    );
+
+    var center = h0 - vec2<f32>(0.5);
+    center.x = center.x
+        + sin(
+            c3Params.seconds * mix(0.45, 0.85, h1.x)
+                + h2.y * TAU
+        ) * 0.035 * shaderParams.randomMag;
+
     let d = f - center;
-    let sx = 0.20 + 0.18 * h.x;
-    let sy = 0.65 + 0.50 * h.y;
-    let body = 1.0 - smoothstep(0.2, 1.0, length(vec2<f32>(d.x / sx, d.y / sy)));
-    let trailX = 1.0 - smoothstep(0.0, 0.18, abs(d.x));
-    let trailY = 1.0 - smoothstep(-0.4, 1.5, d.y);
-    let trail = trailX * trailY * smoothstep(-0.25, 0.25, d.y);
-    let a = dropOn * max(body, trail * 0.42);
-    let n = a * normalize(vec2<f32>(d.x / max(sx, 0.01), d.y / max(sy, 0.01)) + vec2<f32>(0.0001));
-    return vec3<f32>(max(mask0, a), normal0.x + n.x, normal0.y + n.y);
+    let sizeKey = h1.y * h1.y;
+    let runner = smoothstep(0.54, 0.84, h2.x)
+        * smoothstep(0.24, 0.62, sizeKey);
+    var sx = mix(0.105, 0.31, sizeKey);
+    var sy = sx * mix(0.92, 1.34, h0.y);
+    sx = sx * mix(1.0, 0.88, runner * variation);
+    sy = sy * mix(
+        1.0,
+        mix(1.35, 1.82, h1.x),
+        runner * variation
+    );
+
+    let yUnit = clamp(d.y / max(sy, 0.01), -1.0, 1.0);
+    let sideScale = 1.0
+        + yUnit * mix(0.06, 0.19, runner) * variation;
+    let centerBend = (h2.y - 0.5) * 0.032
+        * (1.0 - abs(yUnit)) * variation;
+    let bodyUv = vec2<f32>(
+        (d.x - centerBend) / max(sx * sideScale, 0.01),
+        d.y / max(sy, 0.01)
+    );
+    let surface = 1.0 + variation * (
+        sin(bodyUv.y * 4.0 + h0.x * TAU) * 0.018
+        + sin((bodyUv.x - bodyUv.y) * 6.0 + h2.y * TAU) * 0.012
+    );
+    let bodyDist = length(bodyUv) / max(surface, 0.90);
+    let body = 1.0 - smoothstep(0.70, 1.0, bodyDist);
+
+    let smearClass = max(
+        runner,
+        smoothstep(0.72, 0.96, h0.x)
+            * smoothstep(0.38, 0.68, sizeKey) * 0.45
+    );
+    let trailLength = mix(0.12, 1.34, smearClass)
+        * mix(0.25, 1.15, smearAmount);
+    let behind = -d.y - sy * 0.18;
+    let trailProgress = clamp(
+        behind / max(trailLength, 0.01),
+        0.0,
+        1.0
+    );
+    let trailGate = smoothstep(-0.03, 0.04, behind)
+        * (1.0 - smoothstep(0.80, 1.0, trailProgress));
+    var curve = clamp(shaderParams.windX * 0.0015, -0.05, 0.05)
+        * trailProgress;
+    curve = curve + (h0.x - 0.5) * 0.025
+        * trailProgress * variation;
+    curve = curve
+        + sin(trailProgress * TAU + h2.y * TAU)
+            * 0.015 * trailProgress * variation;
+    let trailX = d.x - curve;
+    var widthAtY = max(
+        0.018,
+        mix(sx * 0.40, 0.018, trailProgress)
+    );
+    widthAtY = widthAtY * (
+        1.0 + sin(
+            trailProgress * mix(8.0, 13.0, h1.x) + h0.y * TAU
+        ) * 0.10 * variation
+    );
+    let trailCore = 1.0 - smoothstep(
+        widthAtY * 0.22,
+        widthAtY,
+        abs(trailX)
+    );
+    let wetFilm = 1.0 - smoothstep(
+        widthAtY,
+        widthAtY * 2.15,
+        abs(trailX)
+    );
+    let trailWeight = mix(0.055, 0.58, smearClass)
+        * smearAmount;
+    let trail = trailGate
+        * (trailCore * 0.78 + wetFilm * 0.16)
+        * trailWeight;
+
+    let a = dropOn * max(body, trail);
+    let bodyNormal = safeNormalize(vec2<f32>(
+        (d.x - centerBend) / max(sx * sx, 0.001),
+        d.y / max(sy * sy, 0.001)
+    ));
+    let trailNormal = safeNormalize(vec2<f32>(
+        trailX / max(widthAtY * widthAtY, 0.001),
+        -0.08
+    ));
+    let dropNormal = bodyNormal * body + trailNormal * trail;
+    let addedNormal = dropOn * safeNormalize(dropNormal)
+        * max(body, trail) * mix(0.78, 1.18, sizeKey);
+    let rim = smoothstep(0.58, 0.84, bodyDist)
+        * (1.0 - smoothstep(0.89, 1.03, bodyDist));
+    let glint = 1.0 - smoothstep(
+        0.07,
+        0.24,
+        length(bodyUv - vec2<f32>(-0.34, -0.34))
+    );
+    let addedShine = dropOn * body
+        * (rim * 0.34 + glint * 0.72);
+    return vec4<f32>(
+        max(mask0, a),
+        normal0.x + addedNormal.x,
+        normal0.y + addedNormal.y,
+        max(shine0, addedShine)
+    );
 }
 
 @fragment
 fn main(input: FragmentInput) -> FragmentOutput {
     let dimU = textureDimensions(textureFront);
-    let pixelSize = 1.0 / max(vec2<f32>(f32(dimU.x), f32(dimU.y)), vec2<f32>(1.0));
-    var p = c3_getLayoutPos(input.fragUV) + vec2<f32>(shaderParams.seed * 137.0, shaderParams.seed * 73.0);
+    let pixelSize = 1.0 / max(
+        vec2<f32>(f32(dimU.x), f32(dimU.y)),
+        vec2<f32>(1.0)
+    );
+    var p = c3_getLayoutPos(input.fragUV)
+        + vec2<f32>(
+            shaderParams.seed * 137.0,
+            shaderParams.seed * 73.0
+        );
     p.x = p.x - c3Params.seconds * shaderParams.windX;
-    p.y = p.y - c3Params.seconds * (130.0 + shaderParams.size * 0.8) * shaderParams.speed;
+    p.y = p.y - c3Params.seconds
+        * (130.0 + shaderParams.size * 0.8)
+        * shaderParams.speed;
     let cell = max(14.0, shaderParams.size);
     let g = floor(p / cell);
     let f = fract(p / cell) - vec2<f32>(0.5);
     var mask = 0.0;
     var normal = vec2<f32>(0.0);
+    var shine = 0.0;
+
     for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
         for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
-            let r = addDrop(g + vec2<f32>(f32(ox), f32(oy)), f - vec2<f32>(f32(ox), f32(oy)), mask, normal);
-            mask = r.x;
-            normal = r.yz;
+            let offset = vec2<f32>(f32(ox), f32(oy));
+            let result = addDrop(
+                g + offset,
+                f - offset,
+                mask,
+                normal,
+                shine
+            );
+            mask = result.x;
+            normal = result.yz;
+            shine = result.w;
         }
     }
-    normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18) * clamp(shaderParams.strength, 0.0, 1.0);
+
+    normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18)
+        * clamp(shaderParams.strength, 0.0, 1.0);
     let base = sampleBase(input.fragUV);
     let refr = sampleBase(input.fragUV + normal);
-    var output: FragmentOutput;
     let m = clamp(mask, 0.0, 1.0);
-    output.color = vec4<f32>(mix(base.rgb, refr.rgb, m) + vec3<f32>(m * 0.035), max(base.a, m * 0.2));
+    var output: FragmentOutput;
+    output.color = vec4<f32>(
+        mix(base.rgb, refr.rgb, m)
+            + vec3<f32>(shine * 0.075 + m * 0.010),
+        max(base.a, m * 0.2)
+    );
     return output;
 }

@@ -20,7 +20,9 @@ struct ShaderParams {
     seed: f32,
     variation: f32,
     smear: f32,
-    speedVar: f32
+    speedVar: f32,
+    fog: f32,
+    dew: f32
 };
 %%SHADERPARAMS_BINDING%% var<uniform> shaderParams: ShaderParams;
 
@@ -62,15 +64,79 @@ fn sampleBase(uv: vec2<f32>) -> vec4<f32> {
     return front + back * (1.0 - front.a);
 }
 
+struct DropAcc {
+    mask: f32,
+    bend: vec2<f32>,
+    shine: f32,
+    wipe: f32,
+};
+
+// Disc blur on a golden-angle spiral. This is the fogged glass: without it a
+// drop is just a lens over an already-sharp scene, which is why drops read as
+// a minor detail rather than as water on a window.
+fn sampleBlur(uv: vec2<f32>, radius: vec2<f32>, jitter: f32) -> vec4<f32> {
+    var acc = sampleBase(uv);
+    for (var i: i32 = 1; i < 20; i = i + 1) {
+        let fi = f32(i);
+        let ang = fi * 2.39996323 + jitter;
+        let rad = sqrt(fi / 19.0);
+        acc = acc + sampleBase(uv + vec2<f32>(cos(ang), sin(ang)) * rad * radius);
+    }
+    return acc / 20.0;
+}
+
+// Static condensation beads. They do not fall and carry no track; they sit on
+// the glass as little lenses and hold their patch clear of the fog.
+fn addDew(
+    id: vec2<f32>,
+    f: vec2<f32>,
+    dewDensity: f32,
+    unitScale: f32,
+    acc0: DropAcc
+) -> DropAcc {
+    var acc = acc0;
+    if (hash12(id + vec2<f32>(shaderParams.seed * 13.0 + 4.7)) > dewDensity) {
+        return acc;
+    }
+
+    let g0 = hash22(id + vec2<f32>(shaderParams.seed * 3.7));
+    let g1 = hash22(id.yx + vec2<f32>(23.1, 9.9) + vec2<f32>(shaderParams.seed * 7.1));
+
+    let c = (g0 - vec2<f32>(0.5)) * 0.66;
+    let d = f - c;
+    let r = mix(0.14, 0.40, g1.x * g1.x);
+    let dist = length(d) / max(r, 0.01);
+    let body = 1.0 - smoothstep(mix(0.55, 0.85, g1.y), 1.0, dist);
+    if (body <= 0.0) {
+        return acc;
+    }
+
+    // Same lens rule as the falling drops, kept clear of power 1.
+    let lensPower = mix(1.6, 3.0, g0.y);
+    acc.bend = acc.bend - d * (lensPower * body * unitScale);
+
+    let rim = smoothstep(0.55, 0.86, dist)
+        * (1.0 - smoothstep(0.90, 1.06, dist));
+    let glintPos = vec2<f32>(-0.30, -0.30) + (g1 - vec2<f32>(0.5)) * 0.5;
+    let glint = 1.0 - smoothstep(
+        0.06,
+        mix(0.14, 0.30, g0.x),
+        length(d / max(r, 0.01) - glintPos)
+    );
+    acc.shine = max(acc.shine, body * (rim * 0.26 + glint * mix(0.35, 0.95, g1.y)));
+    acc.mask = max(acc.mask, body);
+    acc.wipe = max(acc.wipe, body);
+    return acc;
+}
+
 fn addDrop(
     id: vec2<f32>,
     f: vec2<f32>,
     cellDensity: f32,
     speedFactor: f32,
-    mask0: f32,
-    normal0: vec2<f32>,
-    shine0: f32
-) -> vec4<f32> {
+    acc0: DropAcc
+) -> DropAcc {
+    var acc = acc0;
     let variation = clamp(shaderParams.variation, 0.0, 1.0);
     // A slow, clinging drop leaves a shorter and fainter track than one that is
     // running. Without this a slow column would trail like a fast one.
@@ -82,7 +148,7 @@ fn addDrop(
     // five sines and a dozen smoothsteps. At the default density only about
     // 7% of cells hold a drop, so this is where nearly all the cost was.
     if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > cellDensity) {
-        return vec4<f32>(mask0, normal0.x, normal0.y, shine0);
+        return acc;
     }
 
     let h0 = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
@@ -93,6 +159,16 @@ fn addDrop(
     let h2 = hash22(
         id + vec2<f32>(41.2, 13.9)
             + vec2<f32>(shaderParams.seed * 11.3)
+    );
+    // Optical properties get their own entropy. These two only run for cells
+    // that actually hold a drop, so they cost about 1.3 hashes per pixel.
+    let h3 = hash22(
+        id.yx + vec2<f32>(7.7, 53.1)
+            + vec2<f32>(shaderParams.seed * 23.9)
+    );
+    let h4 = hash22(
+        id + vec2<f32>(67.3, 29.5)
+            + vec2<f32>(shaderParams.seed * 31.7)
     );
 
     var center = h0 - vec2<f32>(0.5);
@@ -129,7 +205,9 @@ fn addDrop(
         + sin((bodyUv.x - bodyUv.y) * 6.0 + h2.y * TAU) * 0.012
     );
     let bodyDist = length(bodyUv) / max(surface, 0.90);
-    let body = 1.0 - smoothstep(0.70, 1.0, bodyDist);
+    // Per-drop edge softness: some beads sit crisp on the glass, others read as
+    // flatter, half-wetted smears.
+    let body = 1.0 - smoothstep(mix(0.52, 0.86, h3.x), 1.0, bodyDist);
 
     let smearClass = max(
         runner,
@@ -193,24 +271,49 @@ fn addDrop(
         trailX / max(widthAtY * widthAtY, 0.001),
         -0.08
     ));
-    let dropNormal = bodyNormal * body + trailNormal * trail;
-    let addedNormal = safeNormalize(dropNormal)
-        * max(body, trail) * mix(0.78, 1.18, sizeKey);
-    let rim = smoothstep(0.58, 0.84, bodyDist)
-        * (1.0 - smoothstep(0.89, 1.03, bodyDist));
+    // A bead is a lens, not a smudge: it samples the scene mirrored and
+    // magnified about its own centre. The previous code normalised this
+    // vector, so every drop bent the background by an identical amount and
+    // they all read the same. Offsetting by -d instead keeps the magnitude
+    // proportional to distance from the centre, which is what inverts the
+    // image, and refractive power varies per drop so no two beads match.
+    // The drop samples at centre + (1-power)*d, so power 2 is exact inversion,
+    // and the range is kept clear of 1 where every ray would collapse onto the
+    // centre and the bead would flatten into a disc of one colour.
+    let lensPower = mix(1.45, 3.1, h3.x);
+    let lensVec = -vec2<f32>(d.x - centerBend, d.y) * lensPower;
+    // Toward the rim the surface turns steep, so hand over to an edge bend.
+    let edgeVec = bodyNormal * mix(0.06, 0.22, sizeKey);
+    let edgeMix = smoothstep(0.40, 0.98, bodyDist);
+    let bodyBend = mix(lensVec, lensVec * 0.30 + edgeVec, edgeMix);
+    let addedBend = bodyBend * body + trailNormal * (trail * 0.16);
+
+    // Rim and highlight were fixed constants, so every bead carried the same
+    // ring and the same specular dot in the same relative spot. Both now vary.
+    let rimIn = mix(0.50, 0.68, h4.x);
+    let rim = smoothstep(rimIn, rimIn + mix(0.14, 0.30, h3.y), bodyDist)
+        * (1.0 - smoothstep(0.90, 1.04, bodyDist));
+    let glintPos = vec2<f32>(-0.34, -0.34)
+        + (vec2<f32>(h3.y, h4.y) - vec2<f32>(0.5)) * 0.5;
+    let glintR = mix(0.10, 0.30, h4.y);
     let glint = 1.0 - smoothstep(
-        0.07,
-        0.24,
-        length(bodyUv - vec2<f32>(-0.34, -0.34))
+        glintR * 0.3,
+        glintR,
+        length(bodyUv - glintPos)
     );
     let addedShine = body
-        * (rim * 0.34 + glint * 0.72);
-    return vec4<f32>(
-        max(mask0, a),
-        normal0.x + addedNormal.x,
-        normal0.y + addedNormal.y,
-        max(shine0, addedShine)
-    );
+        * (rim * mix(0.18, 0.46, h4.x) + glint * mix(0.30, 0.95, h3.x));
+    acc.mask = max(acc.mask, a);
+    acc.bend = acc.bend + addedBend;
+    acc.shine = max(acc.shine, addedShine);
+    // Where water is or has just been, the glass is wiped clear of fog. This is
+    // deliberately wider and softer than the visible track: the drop clears a
+    // band, it does not only clear the bright core of its own trail.
+    acc.wipe = max(acc.wipe, max(
+        body,
+        trailGate * (1.0 - smoothstep(widthAtY * 1.5, widthAtY * 3.0, abs(trailX)))
+    ));
+    return acc;
 }
 
 @fragment
@@ -220,7 +323,8 @@ fn main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(f32(dimU.x), f32(dimU.y)),
         vec2<f32>(1.0)
     );
-    var lp = c3_getLayoutPos(input.fragUV)
+    let layoutPos = c3_getLayoutPos(input.fragUV);
+    var lp = layoutPos
         + vec2<f32>(
             shaderParams.seed * 137.0,
             shaderParams.seed * 73.0
@@ -233,7 +337,11 @@ fn main(input: FragmentInput) -> FragmentOutput {
 
     let gx = floor(lp.x / cell);
     let fx = fract(lp.x / cell) - 0.5;
-    var acc = vec4<f32>(0.0);
+    var acc: DropAcc;
+    acc.mask = 0.0;
+    acc.bend = vec2<f32>(0.0);
+    acc.shine = 0.0;
+    acc.wipe = 0.0;
 
     // Each column of cells falls at its own rate, only ever slower than Speed,
     // so raising the spread slows part of the rain instead of speeding the rest
@@ -256,26 +364,66 @@ fn main(input: FragmentInput) -> FragmentOutput {
                 vec2<f32>(colId, gy + f32(oy)),
                 vec2<f32>(fx - f32(ox), fy - f32(oy)),
                 dens, colRate,
-                acc.x, acc.yz, acc.w
+                acc
             );
         }
     }
 
-    let mask = acc.x;
-    var normal = acc.yz;
-    let shine = acc.w;
+    // Condensation sits still on the glass, so it uses the layout position
+    // directly with no fall and no wind drift, on its own finer grid.
+    let dew = clamp(shaderParams.dew, 0.0, 1.0);
+    if (dew > 0.002) {
+        let dcell = cell * 0.30;
+        let dp = layoutPos
+            + vec2<f32>(shaderParams.seed * 211.0, shaderParams.seed * 97.0);
+        let dg = floor(dp / dcell);
+        let df = fract(dp / dcell) - vec2<f32>(0.5);
+        for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
+            for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
+                let o = vec2<f32>(f32(ox), f32(oy));
+                acc = addDew(dg + o, df - o, dew * 0.75, 0.30, acc);
+            }
+        }
+    }
 
-    normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18)
-        * clamp(shaderParams.strength, 0.0, 1.0);
-    let base = sampleBase(input.fragUV);
-    let m = clamp(mask, 0.0, 1.0);
-    // Skip the refracted fetch where there is no drop. sampleBase takes an
-    // explicit LOD, so this is safe in non-uniform control flow.
+    // acc.bend is in cell units, so scale by the cell size to reach pixels and
+    // by pixelSize to reach texture coords. Strength deliberately does NOT
+    // scale this: it would scale the lens power with it, and any drop whose
+    // power passed through 1 on the way down would collapse to a flat disc.
+    // Strength blends the refracted image instead, which has the same end
+    // points and keeps every drop a proper lens at every setting.
+    let offset = acc.bend * cell * pixelSize;
+    let m = clamp(acc.mask, 0.0, 1.0);
+
+    // Fogged glass. The window is blurred everywhere except where water is or
+    // has run, so drops and their tracks read as clear channels through
+    // condensation rather than as lenses over an already-sharp scene. Fog at 0
+    // skips the whole tap loop and costs nothing.
+    let fogAmt = clamp(shaderParams.fog, 0.0, 1.0);
+    var base: vec4<f32>;
+    if (fogAmt > 0.002) {
+        let clearness = clamp(acc.wipe, 0.0, 1.0);
+        let radius = pixelSize * (fogAmt * 11.0) * (1.0 - clearness);
+        // Rotate the tap spiral per pixel so the disc's undersampling shows up
+        // as dither rather than as rings. Interleaved gradient noise is used
+        // rather than a hash because its pattern is far finer grained, which
+        // matters on hard edges where disc variance is highest.
+        let px = floor(input.fragUV / max(pixelSize, vec2<f32>(1e-6)));
+        let jitter = fract(52.9829189
+            * fract(0.06711056 * px.x + 0.00583715 * px.y)) * TAU;
+        base = sampleBlur(input.fragUV, radius, jitter);
+    } else {
+        base = sampleBase(input.fragUV);
+    }
+
+    // The lens sample stays sharp: looking through a bead you see a clear,
+    // inverted image, not the fogged film around it.
     var refracted = base.rgb;
     if (m > 0.0) {
-        refracted = mix(base.rgb, sampleBase(input.fragUV + normal).rgb, m);
+        refracted = sampleBase(input.fragUV + offset).rgb;
     }
-    let rgb = refracted + vec3<f32>(shine * 0.075 + m * 0.010);
+    let rgb = mix(base.rgb, refracted, m * clamp(shaderParams.strength, 0.0, 1.0))
+        + vec3<f32>(acc.shine * 0.075 + m * 0.010);
     var output: FragmentOutput;
     output.color = vec4<f32>(rgb, max(base.a, m * 0.2));
     return output;

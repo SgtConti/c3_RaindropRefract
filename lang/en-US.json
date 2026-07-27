@@ -5,18 +5,19 @@
     "effects": {
       "sgtconti_raindrop_refract": {
         "name": "Raindrop Refraction",
-        "description": "Procedural falling raindrop refraction with natural window beads and gravity-led wet tracks. Supports WebGL and WebGPU.",
+        "description": "Procedural falling raindrop refraction with natural window beads, gravity-led wet tracks and per-drop fall speeds. Supports WebGL and WebGPU.",
         "parameters": {
           "density": {"name": "Density", "desc": "Chance of raindrops per cell."},
           "size": {"name": "Size", "desc": "Approximate drop cell size in pixels."},
-          "speed": {"name": "Speed", "desc": "Fall speed multiplier."},
+          "speed": {"name": "Speed", "desc": "Fall speed multiplier. Sets the speed of the fastest drops."},
           "randomMag": {"name": "Randomness", "desc": "Random position jitter and wobble amount."},
           "windX": {"name": "Wind X", "desc": "Horizontal wind drift in pixels per second."},
           "strength": {"name": "Strength", "desc": "Refraction strength."},
           "blurLod": {"name": "Blur LOD", "desc": "Texture LOD used for the refracted sample in WebGPU."},
           "seed": {"name": "Seed", "desc": "Offsets the random pattern."},
           "variation": {"name": "Drop Variation", "desc": "Natural variation in bead size, roundness and vertical pear-shaped runners."},
-          "smear": {"name": "Smear", "desc": "Amount and reach of soft, gravity-aligned wet tracks behind moving drops."}
+          "smear": {"name": "Smear", "desc": "Amount and reach of soft, gravity-aligned wet tracks behind moving drops. Slower drops trail less."},
+          "speedVar": {"name": "Speed variation", "desc": "Spread of individual drop fall speeds. Drops vary downwards from Speed, never above it. 0 makes every drop fall at the same rate."}
         }
       }
     }

@@ -24,6 +24,7 @@ uniform float uBlurLod;
 uniform float uSeed;
 uniform float uVariation;
 uniform float uSmear;
+uniform float uSpeedVar;
 
 const float TAU = 6.28318530718;
 
@@ -56,19 +57,22 @@ vec4 sampleBase(vec2 uv){
 void addDrop(
     vec2 id,
     vec2 f,
+    float cellDensity,
+    float speedFactor,
     inout float mask,
     inout vec2 normal,
     inout float shine
 ){
-    float density = clamp(uDensity, 0.0, 1.0);
     float variation = clamp(uVariation, 0.0, 1.0);
-    float smearAmount = clamp(uSmear, 0.0, 1.0);
+    // A slow, clinging drop leaves a shorter and fainter track than one that is
+    // running. Without this a slow column would trail like a fast one.
+    float smearAmount = clamp(uSmear, 0.0, 1.0) * mix(0.35, 1.0, speedFactor);
 
     // Bail out before any drop maths runs. The occupancy test was previously
     // only applied to the result, so empty cells still paid for three hashes,
     // five sines and a dozen smoothsteps. At the default density only about
     // 7% of cells hold a drop, so this is where nearly all the cost was.
-    if (hash12(id + vec2(uSeed * 17.0)) > density * 0.33)
+    if (hash12(id + vec2(uSeed * 17.0)) > cellDensity)
         return;
 
     vec2 h0 = hash22(id + vec2(uSeed * 3.1));
@@ -186,19 +190,41 @@ void main(void){
     vec2 n = (vTex - srcOriginStart) / max(srcOriginEnd - srcOriginStart, vec2(1e-6));
     vec2 layoutPos = mix(layoutStart, layoutEnd, n);
     float cell = max(14.0, uSize);
-    vec2 p = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
-    p.x -= seconds * uWindX;
-    p.y -= seconds * (130.0 + uSize * 0.8) * uSpeed;
-    vec2 g = floor(p / cell);
-    vec2 f = fract(p / cell) - 0.5;
+    vec2 lp = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
+    lp.x -= seconds * uWindX;
+    float baseFall = (130.0 + uSize * 0.8) * uSpeed;
+    float spread = clamp(uSpeedVar, 0.0, 1.0);
+    float dens = clamp(uDensity, 0.0, 1.0) * 0.33;
+
+    float gx = floor(lp.x / cell);
+    float fx = fract(lp.x / cell) - 0.5;
     float mask = 0.0;
     vec2 normal = vec2(0.0);
     float shine = 0.0;
 
-    for (int oy = -1; oy <= 1; oy++){
-        for (int ox = -1; ox <= 1; ox++){
-            vec2 offset = vec2(float(ox), float(oy));
-            addDrop(g + offset, f - offset, mask, normal, shine);
+    // Each column of cells falls at its own rate, only ever slower than Speed,
+    // so raising the spread slows part of the rain instead of speeding the rest
+    // up. The rate is keyed to the drop's own column rather than the pixel's,
+    // so neighbouring pixels always agree on where a drop is and no seam forms
+    // at column edges. Cost is three extra hashes, not three extra grids.
+    for (int ox = -1; ox <= 1; ox++){
+        float colId = gx + float(ox);
+        float colRate = mix(
+            1.0,
+            mix(0.34, 1.0, hash12(vec2(colId, 91.7) + uSeed)),
+            spread
+        );
+        float py = lp.y - seconds * baseFall * colRate;
+        float gy = floor(py / cell);
+        float fy = fract(py / cell) - 0.5;
+
+        for (int oy = -1; oy <= 1; oy++){
+            addDrop(
+                vec2(colId, gy + float(oy)),
+                vec2(fx - float(ox), fy - float(oy)),
+                dens, colRate,
+                mask, normal, shine
+            );
         }
     }
 

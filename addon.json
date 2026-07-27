@@ -4,11 +4,11 @@
   "type": "effect",
   "name": "Raindrop Refraction",
   "id": "sgtconti_raindrop_refract",
-  "version": "1.1.1.0",
+  "version": "1.2.0.0",
   "author": "SgtConti",
   "website": "https://github.com/SgtConti/c3_RaindropRefract",
   "documentation": "https://github.com/SgtConti/c3_RaindropRefract",
-  "description": "Procedural falling raindrop refraction with natural window beads, gravity-led wet tracks, density, size, wind, fall speed and distortion controls. Supports WebGL and WebGPU.",
+  "description": "Procedural falling raindrop refraction with natural window beads, gravity-led wet tracks, per-drop fall speeds, density, size, wind and distortion controls. Supports WebGL and WebGPU.",
   "category": "other",
   "supported-renderers": ["webgl", "webgpu"],
   "blends-background": true,
@@ -26,7 +26,8 @@
     {"id": "blurLod", "type": "float", "initial-value": 0, "uniform": "uBlurLod", "interpolatable": true},
     {"id": "seed", "type": "float", "initial-value": 0, "uniform": "uSeed", "interpolatable": true},
     {"id": "variation", "type": "percent", "initial-value": 0.75, "uniform": "uVariation", "interpolatable": true},
-    {"id": "smear", "type": "percent", "initial-value": 0.5, "uniform": "uSmear", "interpolatable": true}
+    {"id": "smear", "type": "percent", "initial-value": 0.5, "uniform": "uSmear", "interpolatable": true},
+    {"id": "speedVar", "type": "percent", "initial-value": 0.6, "uniform": "uSpeedVar", "interpolatable": true}
   ],
   "file-list": ["addon.json", "effect.fx", "effect.wgsl", "icon.svg", "lang/en-US.json"]
 }

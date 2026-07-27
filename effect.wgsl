@@ -19,7 +19,8 @@ struct ShaderParams {
     blurLod: f32,
     seed: f32,
     variation: f32,
-    smear: f32
+    smear: f32,
+    speedVar: f32
 };
 %%SHADERPARAMS_BINDING%% var<uniform> shaderParams: ShaderParams;
 
@@ -64,19 +65,23 @@ fn sampleBase(uv: vec2<f32>) -> vec4<f32> {
 fn addDrop(
     id: vec2<f32>,
     f: vec2<f32>,
+    cellDensity: f32,
+    speedFactor: f32,
     mask0: f32,
     normal0: vec2<f32>,
     shine0: f32
 ) -> vec4<f32> {
-    let density = clamp(shaderParams.density, 0.0, 1.0);
     let variation = clamp(shaderParams.variation, 0.0, 1.0);
-    let smearAmount = clamp(shaderParams.smear, 0.0, 1.0);
+    // A slow, clinging drop leaves a shorter and fainter track than one that is
+    // running. Without this a slow column would trail like a fast one.
+    let smearAmount = clamp(shaderParams.smear, 0.0, 1.0)
+        * mix(0.35, 1.0, speedFactor);
 
     // Bail out before any drop maths runs. The occupancy test was previously
     // only applied to the result, so empty cells still paid for three hashes,
     // five sines and a dozen smoothsteps. At the default density only about
     // 7% of cells hold a drop, so this is where nearly all the cost was.
-    if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > density * 0.33) {
+    if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > cellDensity) {
         return vec4<f32>(mask0, normal0.x, normal0.y, shine0);
     }
 
@@ -215,37 +220,50 @@ fn main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(f32(dimU.x), f32(dimU.y)),
         vec2<f32>(1.0)
     );
-    var p = c3_getLayoutPos(input.fragUV)
+    var lp = c3_getLayoutPos(input.fragUV)
         + vec2<f32>(
             shaderParams.seed * 137.0,
             shaderParams.seed * 73.0
         );
-    p.x = p.x - c3Params.seconds * shaderParams.windX;
-    p.y = p.y - c3Params.seconds
-        * (130.0 + shaderParams.size * 0.8)
-        * shaderParams.speed;
+    lp.x = lp.x - c3Params.seconds * shaderParams.windX;
     let cell = max(14.0, shaderParams.size);
-    let g = floor(p / cell);
-    let f = fract(p / cell) - vec2<f32>(0.5);
-    var mask = 0.0;
-    var normal = vec2<f32>(0.0);
-    var shine = 0.0;
+    let baseFall = (130.0 + shaderParams.size * 0.8) * shaderParams.speed;
+    let spread = clamp(shaderParams.speedVar, 0.0, 1.0);
+    let dens = clamp(shaderParams.density, 0.0, 1.0) * 0.33;
 
-    for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
-        for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
-            let offset = vec2<f32>(f32(ox), f32(oy));
-            let result = addDrop(
-                g + offset,
-                f - offset,
-                mask,
-                normal,
-                shine
+    let gx = floor(lp.x / cell);
+    let fx = fract(lp.x / cell) - 0.5;
+    var acc = vec4<f32>(0.0);
+
+    // Each column of cells falls at its own rate, only ever slower than Speed,
+    // so raising the spread slows part of the rain instead of speeding the rest
+    // up. The rate is keyed to the drop's own column rather than the pixel's,
+    // so neighbouring pixels always agree on where a drop is and no seam forms
+    // at column edges. Cost is three extra hashes, not three extra grids.
+    for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
+        let colId = gx + f32(ox);
+        let colRate = mix(
+            1.0,
+            mix(0.34, 1.0, hash12(vec2<f32>(colId, 91.7) + vec2<f32>(shaderParams.seed))),
+            spread
+        );
+        let py = lp.y - c3Params.seconds * baseFall * colRate;
+        let gy = floor(py / cell);
+        let fy = fract(py / cell) - 0.5;
+
+        for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
+            acc = addDrop(
+                vec2<f32>(colId, gy + f32(oy)),
+                vec2<f32>(fx - f32(ox), fy - f32(oy)),
+                dens, colRate,
+                acc.x, acc.yz, acc.w
             );
-            mask = result.x;
-            normal = result.yz;
-            shine = result.w;
         }
     }
+
+    let mask = acc.x;
+    var normal = acc.yz;
+    let shine = acc.w;
 
     normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18)
         * clamp(shaderParams.strength, 0.0, 1.0);

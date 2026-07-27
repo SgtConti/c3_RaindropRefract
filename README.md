@@ -30,8 +30,27 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 | Blur LOD | Texture LOD used for the refracted sample in WebGPU. |
 | Seed | Offsets the random pattern. |
 | Drop Variation | Natural variation in bead size, roundness and vertical pear-shaped runners. |
-| Smear | Amount and reach of soft, gravity-aligned wet tracks behind moving drops. |
+| Smear | Amount and reach of soft, gravity-aligned wet tracks behind moving drops. Slower drops trail less. |
+| Speed variation | Spread of individual drop fall speeds. Drops vary downwards from Speed, never above it. `0` makes every drop fall at the same rate. |
 
 ## Suggested layer setup
 
 Apply the effect to a transparent layer above the scene to refract everything beneath that layer.
+
+## Performance
+
+The effect is fill-rate bound, so cost scales with the on-screen area it covers.
+
+- **Density** is the main cost control. Each pixel tests a 3×3 block of drop cells, and only cells that actually hold a drop run the full drop maths.
+- **Speed variation** is nearly free. It costs three extra hashes per pixel, not three extra grids of drops.
+- **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
+- **Blur LOD** only blurs on WebGPU. WebGL 1 has no fragment-stage LOD sampling, so on WebGL it just nudges refraction strength very slightly.
+
+## Changes in 1.2.0
+
+**Drops no longer all fall at the same rate.** Previously the whole drop grid translated as one block, so every drop moved in lockstep. Each column of cells now falls at its own rate, controlled by the new **Speed variation** parameter. Rates only ever go *below* **Speed**, never above, so raising the spread slows part of the rain rather than speeding the rest up — at 100% the slowest columns run at about a third of **Speed**. Wet tracks scale with the rate too, so a slow, clinging drop trails less than a running one. Set **Speed variation** to `0` for the old uniform behaviour.
+
+Two smaller fixes:
+
+- **Long wet tracks no longer truncate.** A track could reach further than the 3×3 cell window that gets sampled, so its far end appeared or vanished depending on how the drop happened to line up with the cell grid. Track reach is now capped to what the window covers, which makes long tracks a consistent length. The longest tracks are somewhat shorter than before as a result.
+- **Drop layout is reshuffled.** `hash22` used one constant where it needs three, which left the two returned components sharing a source and measurably worsened their joint distribution. Fixing it changes which cells hold drops, so an existing scene will have its drops in different places. Use **Seed** if you want to hunt for a particular arrangement.

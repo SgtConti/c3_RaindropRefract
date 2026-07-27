@@ -19,7 +19,8 @@ struct ShaderParams {
     blurLod: f32,
     seed: f32,
     variation: f32,
-    smear: f32
+    smear: f32,
+    speedVar: f32
 };
 %%SHADERPARAMS_BINDING%% var<uniform> shaderParams: ShaderParams;
 
@@ -31,8 +32,12 @@ fn hash12(p: vec2<f32>) -> f32 {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// Canonical form uses three different constants. With a single scalar, p3.x
+// and p3.z are both derived from p.x and stay equal, which measurably worsens
+// the 2D uniformity of the pair (chi-square over an 8x8 grid: 90 vs 71 for an
+// ideal of ~63). Cheap to fix, so the drop layout gets the better distribution.
 fn hash22(p: vec2<f32>) -> vec2<f32> {
-    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
     p3 = p3 + dot(p3, p3.yzx + vec3<f32>(33.33));
     return fract((p3.xx + p3.yz) * p3.zy);
 }
@@ -60,18 +65,25 @@ fn sampleBase(uv: vec2<f32>) -> vec4<f32> {
 fn addDrop(
     id: vec2<f32>,
     f: vec2<f32>,
+    cellDensity: f32,
+    speedFactor: f32,
     mask0: f32,
     normal0: vec2<f32>,
     shine0: f32
 ) -> vec4<f32> {
-    let density = clamp(shaderParams.density, 0.0, 1.0);
     let variation = clamp(shaderParams.variation, 0.0, 1.0);
-    let smearAmount = clamp(shaderParams.smear, 0.0, 1.0);
-    let dropOn = select(
-        0.0,
-        1.0,
-        hash12(id + vec2<f32>(shaderParams.seed * 17.0)) <= density * 0.33
-    );
+    // A slow, clinging drop leaves a shorter and fainter track than one that is
+    // running. Without this a slow column would trail like a fast one.
+    let smearAmount = clamp(shaderParams.smear, 0.0, 1.0)
+        * mix(0.35, 1.0, speedFactor);
+
+    // Bail out before any drop maths runs. The occupancy test was previously
+    // only applied to the result, so empty cells still paid for three hashes,
+    // five sines and a dozen smoothsteps. At the default density only about
+    // 7% of cells hold a drop, so this is where nearly all the cost was.
+    if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > cellDensity) {
+        return vec4<f32>(mask0, normal0.x, normal0.y, shine0);
+    }
 
     let h0 = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
     let h1 = hash22(
@@ -124,8 +136,13 @@ fn addDrop(
         smoothstep(0.72, 0.96, h0.x)
             * smoothstep(0.38, 0.68, sizeKey) * 0.45
     );
-    let trailLength = mix(0.12, 1.34, smearClass)
-        * mix(0.25, 1.15, smearAmount);
+    // A drop two cells below can be as close as 1.0 cell, and only the -1..1
+    // neighbourhood is sampled. Capping the reach here keeps long tracks a
+    // consistent length instead of letting them truncate on cell alignment.
+    let trailLength = min(
+        mix(0.12, 1.34, smearClass) * mix(0.25, 1.15, smearAmount),
+        1.0 - sy * 0.18
+    );
     let behind = -d.y - sy * 0.18;
     let trailProgress = clamp(
         behind / max(trailLength, 0.01),
@@ -167,7 +184,7 @@ fn addDrop(
         * (trailCore * 0.78 + wetFilm * 0.16)
         * trailWeight;
 
-    let a = dropOn * max(body, trail);
+    let a = max(body, trail);
     let bodyNormal = safeNormalize(vec2<f32>(
         (d.x - centerBend) / max(sx * sx, 0.001),
         d.y / max(sy * sy, 0.001)
@@ -177,7 +194,7 @@ fn addDrop(
         -0.08
     ));
     let dropNormal = bodyNormal * body + trailNormal * trail;
-    let addedNormal = dropOn * safeNormalize(dropNormal)
+    let addedNormal = safeNormalize(dropNormal)
         * max(body, trail) * mix(0.78, 1.18, sizeKey);
     let rim = smoothstep(0.58, 0.84, bodyDist)
         * (1.0 - smoothstep(0.89, 1.03, bodyDist));
@@ -186,7 +203,7 @@ fn addDrop(
         0.24,
         length(bodyUv - vec2<f32>(-0.34, -0.34))
     );
-    let addedShine = dropOn * body
+    let addedShine = body
         * (rim * 0.34 + glint * 0.72);
     return vec4<f32>(
         max(mask0, a),
@@ -203,48 +220,63 @@ fn main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(f32(dimU.x), f32(dimU.y)),
         vec2<f32>(1.0)
     );
-    var p = c3_getLayoutPos(input.fragUV)
+    var lp = c3_getLayoutPos(input.fragUV)
         + vec2<f32>(
             shaderParams.seed * 137.0,
             shaderParams.seed * 73.0
         );
-    p.x = p.x - c3Params.seconds * shaderParams.windX;
-    p.y = p.y - c3Params.seconds
-        * (130.0 + shaderParams.size * 0.8)
-        * shaderParams.speed;
+    lp.x = lp.x - c3Params.seconds * shaderParams.windX;
     let cell = max(14.0, shaderParams.size);
-    let g = floor(p / cell);
-    let f = fract(p / cell) - vec2<f32>(0.5);
-    var mask = 0.0;
-    var normal = vec2<f32>(0.0);
-    var shine = 0.0;
+    let baseFall = (130.0 + shaderParams.size * 0.8) * shaderParams.speed;
+    let spread = clamp(shaderParams.speedVar, 0.0, 1.0);
+    let dens = clamp(shaderParams.density, 0.0, 1.0) * 0.33;
 
-    for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
-        for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
-            let offset = vec2<f32>(f32(ox), f32(oy));
-            let result = addDrop(
-                g + offset,
-                f - offset,
-                mask,
-                normal,
-                shine
+    let gx = floor(lp.x / cell);
+    let fx = fract(lp.x / cell) - 0.5;
+    var acc = vec4<f32>(0.0);
+
+    // Each column of cells falls at its own rate, only ever slower than Speed,
+    // so raising the spread slows part of the rain instead of speeding the rest
+    // up. The rate is keyed to the drop's own column rather than the pixel's,
+    // so neighbouring pixels always agree on where a drop is and no seam forms
+    // at column edges. Cost is three extra hashes, not three extra grids.
+    for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
+        let colId = gx + f32(ox);
+        let colRate = mix(
+            1.0,
+            mix(0.34, 1.0, hash12(vec2<f32>(colId, 91.7) + vec2<f32>(shaderParams.seed))),
+            spread
+        );
+        let py = lp.y - c3Params.seconds * baseFall * colRate;
+        let gy = floor(py / cell);
+        let fy = fract(py / cell) - 0.5;
+
+        for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
+            acc = addDrop(
+                vec2<f32>(colId, gy + f32(oy)),
+                vec2<f32>(fx - f32(ox), fy - f32(oy)),
+                dens, colRate,
+                acc.x, acc.yz, acc.w
             );
-            mask = result.x;
-            normal = result.yz;
-            shine = result.w;
         }
     }
+
+    let mask = acc.x;
+    var normal = acc.yz;
+    let shine = acc.w;
 
     normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18)
         * clamp(shaderParams.strength, 0.0, 1.0);
     let base = sampleBase(input.fragUV);
-    let refr = sampleBase(input.fragUV + normal);
     let m = clamp(mask, 0.0, 1.0);
+    // Skip the refracted fetch where there is no drop. sampleBase takes an
+    // explicit LOD, so this is safe in non-uniform control flow.
+    var refracted = base.rgb;
+    if (m > 0.0) {
+        refracted = mix(base.rgb, sampleBase(input.fragUV + normal).rgb, m);
+    }
+    let rgb = refracted + vec3<f32>(shine * 0.075 + m * 0.010);
     var output: FragmentOutput;
-    output.color = vec4<f32>(
-        mix(base.rgb, refr.rgb, m)
-            + vec3<f32>(shine * 0.075 + m * 0.010),
-        max(base.a, m * 0.2)
-    );
+    output.color = vec4<f32>(rgb, max(base.a, m * 0.2));
     return output;
 }

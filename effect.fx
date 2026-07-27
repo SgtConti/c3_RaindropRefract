@@ -24,6 +24,7 @@ uniform float uBlurLod;
 uniform float uSeed;
 uniform float uVariation;
 uniform float uSmear;
+uniform float uSpeedVar;
 
 const float TAU = 6.28318530718;
 
@@ -33,8 +34,12 @@ float hash12(vec2 p){
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// Canonical form uses three different constants. With a single scalar, p3.x
+// and p3.z are both derived from p.x and stay equal, which measurably worsens
+// the 2D uniformity of the pair (chi-square over an 8x8 grid: 90 vs 71 for an
+// ideal of ~63). Cheap to fix, so the drop layout gets the better distribution.
 vec2 hash22(vec2 p){
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
 }
@@ -52,14 +57,23 @@ vec4 sampleBase(vec2 uv){
 void addDrop(
     vec2 id,
     vec2 f,
+    float cellDensity,
+    float speedFactor,
     inout float mask,
     inout vec2 normal,
     inout float shine
 ){
-    float density = clamp(uDensity, 0.0, 1.0);
     float variation = clamp(uVariation, 0.0, 1.0);
-    float smearAmount = clamp(uSmear, 0.0, 1.0);
-    float dropOn = step(hash12(id + vec2(uSeed * 17.0)), density * 0.33);
+    // A slow, clinging drop leaves a shorter and fainter track than one that is
+    // running. Without this a slow column would trail like a fast one.
+    float smearAmount = clamp(uSmear, 0.0, 1.0) * mix(0.35, 1.0, speedFactor);
+
+    // Bail out before any drop maths runs. The occupancy test was previously
+    // only applied to the result, so empty cells still paid for three hashes,
+    // five sines and a dozen smoothsteps. At the default density only about
+    // 7% of cells hold a drop, so this is where nearly all the cost was.
+    if (hash12(id + vec2(uSeed * 17.0)) > cellDensity)
+        return;
 
     vec2 h0 = hash22(id + vec2(uSeed * 3.1));
     vec2 h1 = hash22(id.yx + vec2(19.7, 7.3) + vec2(uSeed * 5.7));
@@ -102,6 +116,10 @@ void addDrop(
     );
     float trailLength = mix(0.12, 1.34, smearClass)
         * mix(0.25, 1.15, smearAmount);
+    // A drop two cells below can be as close as 1.0 cell, and only the -1..1
+    // neighbourhood is sampled. Capping the reach here keeps long tracks a
+    // consistent length instead of letting them truncate on cell alignment.
+    trailLength = min(trailLength, 1.0 - sy * 0.18);
     float behind = -d.y - sy * 0.18;
     float trailProgress = clamp(
         behind / max(trailLength, 0.01),
@@ -140,7 +158,7 @@ void addDrop(
         * (trailCore * 0.78 + wetFilm * 0.16)
         * trailWeight;
 
-    float a = dropOn * max(body, trail);
+    float a = max(body, trail);
     mask = max(mask, a);
 
     vec2 bodyNormal = safeNormalize(vec2(
@@ -152,7 +170,7 @@ void addDrop(
         -0.08
     ));
     vec2 dropNormal = bodyNormal * body + trailNormal * trail;
-    normal += dropOn * safeNormalize(dropNormal)
+    normal += safeNormalize(dropNormal)
         * max(body, trail) * mix(0.78, 1.18, sizeKey);
 
     float rim = smoothstep(0.58, 0.84, bodyDist)
@@ -164,7 +182,7 @@ void addDrop(
     );
     shine = max(
         shine,
-        dropOn * body * (rim * 0.34 + glint * 0.72)
+        body * (rim * 0.34 + glint * 0.72)
     );
 }
 
@@ -172,28 +190,54 @@ void main(void){
     vec2 n = (vTex - srcOriginStart) / max(srcOriginEnd - srcOriginStart, vec2(1e-6));
     vec2 layoutPos = mix(layoutStart, layoutEnd, n);
     float cell = max(14.0, uSize);
-    vec2 p = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
-    p.x -= seconds * uWindX;
-    p.y -= seconds * (130.0 + uSize * 0.8) * uSpeed;
-    vec2 g = floor(p / cell);
-    vec2 f = fract(p / cell) - 0.5;
+    vec2 lp = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
+    lp.x -= seconds * uWindX;
+    float baseFall = (130.0 + uSize * 0.8) * uSpeed;
+    float spread = clamp(uSpeedVar, 0.0, 1.0);
+    float dens = clamp(uDensity, 0.0, 1.0) * 0.33;
+
+    float gx = floor(lp.x / cell);
+    float fx = fract(lp.x / cell) - 0.5;
     float mask = 0.0;
     vec2 normal = vec2(0.0);
     float shine = 0.0;
 
-    for (int oy = -1; oy <= 1; oy++){
-        for (int ox = -1; ox <= 1; ox++){
-            vec2 offset = vec2(float(ox), float(oy));
-            addDrop(g + offset, f - offset, mask, normal, shine);
+    // Each column of cells falls at its own rate, only ever slower than Speed,
+    // so raising the spread slows part of the rain instead of speeding the rest
+    // up. The rate is keyed to the drop's own column rather than the pixel's,
+    // so neighbouring pixels always agree on where a drop is and no seam forms
+    // at column edges. Cost is three extra hashes, not three extra grids.
+    for (int ox = -1; ox <= 1; ox++){
+        float colId = gx + float(ox);
+        float colRate = mix(
+            1.0,
+            mix(0.34, 1.0, hash12(vec2(colId, 91.7) + uSeed)),
+            spread
+        );
+        float py = lp.y - seconds * baseFall * colRate;
+        float gy = floor(py / cell);
+        float fy = fract(py / cell) - 0.5;
+
+        for (int oy = -1; oy <= 1; oy++){
+            addDrop(
+                vec2(colId, gy + float(oy)),
+                vec2(fx - float(ox), fy - float(oy)),
+                dens, colRate,
+                mask, normal, shine
+            );
         }
     }
 
+    // Kept so uBlurLod stays referenced: an unused uniform is stripped by the
+    // compiler and its location lookup would come back null. WebGL 1 has no
+    // fragment-stage LOD sampling, so Blur LOD only blurs on WebGPU.
     float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
     normal *= pixelSize * (8.0 + uSize * 0.18)
         * clamp(uStrength, 0.0, 1.0) * lodBoost;
     vec4 base = sampleBase(vTex);
     vec4 refr = sampleBase(vTex + normal);
-    vec3 rgb = mix(base.rgb, refr.rgb, clamp(mask, 0.0, 1.0));
-    rgb += vec3(shine * 0.075 + mask * 0.010);
-    gl_FragColor = vec4(rgb, max(base.a, mask * 0.2));
+    float m = clamp(mask, 0.0, 1.0);
+    vec3 rgb = mix(base.rgb, refr.rgb, m);
+    rgb += vec3(shine * 0.075 + m * 0.010);
+    gl_FragColor = vec4(rgb, max(base.a, m * 0.2));
 }

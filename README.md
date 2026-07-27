@@ -12,7 +12,7 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 - Many small round beads, fewer pear-shaped runners and rare larger drops.
 - Gravity-aligned wet tracks behind runners, with restrained width and curvature variation.
 - No random per-drop rotation; drop orientation remains consistent with gravity.
-- Refractive rims and small upper highlights for a wet-window look.
+- Every bead is its own lens: refractive power, edge softness, rim and highlight placement all vary per drop.
 - Adjustable density, size, speed, randomness, wind, refraction strength, blur LOD, seed, drop variation and smear amount.
 - Background sampling for refracted scene content.
 - Uses layout-space coordinates so drops follow layer scrolling.
@@ -26,7 +26,7 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 | Speed | Fall speed multiplier. |
 | Randomness | Random position jitter and wobble amount. |
 | Wind X | Horizontal wind drift in pixels per second. |
-| Strength | Refraction strength. |
+| Strength | How much of the refracted image shows through each drop. Does not change the lens itself, so drops stay properly lens-like at every setting. |
 | Blur LOD | Texture LOD used for the refracted sample in WebGPU. |
 | Seed | Offsets the random pattern. |
 | Drop Variation | Natural variation in bead size, roundness and vertical pear-shaped runners. |
@@ -45,6 +45,14 @@ The effect is fill-rate bound, so cost scales with the on-screen area it covers.
 - **Speed variation** is nearly free. It costs three extra hashes per pixel, not three extra grids of drops.
 - **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
 - **Blur LOD** only blurs on WebGPU. WebGL 1 has no fragment-stage LOD sampling, so on WebGL it just nudges refraction strength very slightly.
+
+## Changes in 1.3.0
+
+**Drops are now individually distinct.** Previously the refraction vector was normalised before use, so every bead displaced the background by the same amount with the same falloff — a radial smear rather than a lens, identical on every drop. The rim thresholds and the specular highlight position were also hard-coded constants, so every bead carried the same ring and the same dot in the same relative spot.
+
+Each drop now samples the scene mirrored and magnified about its own centre, which is what a real bead does, with refractive power varying per drop. Edge softness, rim position, rim width, rim brightness, highlight position, highlight size and highlight brightness all vary per drop as well. Cost is about 2.7%: two extra hashes, and only for cells that actually hold a drop.
+
+**Strength changed meaning slightly.** It used to scale the refraction offset, which also scaled the lens power — any drop whose effective power passed through 1 on the way down collapsed into a flat disc of one colour, and at the default Strength that hit a real share of drops. Strength now blends the refracted image instead. Both end points behave as before and the response is linear across the range, but a given Strength value will look a little different than it did.
 
 ## Changes in 1.2.0
 

@@ -60,7 +60,7 @@ void addDrop(
     float cellDensity,
     float speedFactor,
     inout float mask,
-    inout vec2 normal,
+    inout vec2 bend,
     inout float shine
 ){
     float variation = clamp(uVariation, 0.0, 1.0);
@@ -78,6 +78,10 @@ void addDrop(
     vec2 h0 = hash22(id + vec2(uSeed * 3.1));
     vec2 h1 = hash22(id.yx + vec2(19.7, 7.3) + vec2(uSeed * 5.7));
     vec2 h2 = hash22(id + vec2(41.2, 13.9) + vec2(uSeed * 11.3));
+    // Optical properties get their own entropy. These two only run for cells
+    // that actually hold a drop, so they cost about 1.3 hashes per pixel.
+    vec2 h3 = hash22(id.yx + vec2(7.7, 53.1) + vec2(uSeed * 23.9));
+    vec2 h4 = hash22(id + vec2(67.3, 29.5) + vec2(uSeed * 31.7));
 
     vec2 center = h0 - 0.5;
     center.x += sin(
@@ -107,7 +111,9 @@ void addDrop(
         + sin((bodyUv.x - bodyUv.y) * 6.0 + h2.y * TAU) * 0.012
     );
     float bodyDist = length(bodyUv) / max(surface, 0.90);
-    float body = 1.0 - smoothstep(0.70, 1.0, bodyDist);
+    // Per-drop edge softness: some beads sit crisp on the glass, others read as
+    // flatter, half-wetted smears.
+    float body = 1.0 - smoothstep(mix(0.52, 0.86, h3.x), 1.0, bodyDist);
 
     float smearClass = max(
         runner,
@@ -165,24 +171,48 @@ void addDrop(
         (d.x - centerBend) / max(sx * sx, 0.001),
         d.y / max(sy * sy, 0.001)
     ));
+
+    // A bead is a lens, not a smudge: it samples the scene mirrored and
+    // magnified about its own centre. The previous code normalised this
+    // vector, so every drop bent the background by an identical amount and
+    // they all read the same. Offsetting by -d instead keeps the magnitude
+    // proportional to distance from the centre, which is what inverts the
+    // image, and refractive power varies per drop so no two beads match.
+    // The drop samples at centre + (1-power)*d, so power 2 is exact inversion,
+    // and the range is kept clear of 1 where every ray would collapse onto the
+    // centre and the bead would flatten into a disc of one colour.
+    float lensPower = mix(1.45, 3.1, h3.x);
+    vec2 lensVec = -vec2(d.x - centerBend, d.y) * lensPower;
+    // Toward the rim the surface turns steep, so hand over to an edge bend.
+    vec2 edgeVec = bodyNormal * mix(0.06, 0.22, sizeKey);
+    float edgeMix = smoothstep(0.40, 0.98, bodyDist);
+    vec2 bodyBend = mix(lensVec, lensVec * 0.30 + edgeVec, edgeMix);
+
     vec2 trailNormal = safeNormalize(vec2(
         trailX / max(widthAtY * widthAtY, 0.001),
         -0.08
     ));
-    vec2 dropNormal = bodyNormal * body + trailNormal * trail;
-    normal += safeNormalize(dropNormal)
-        * max(body, trail) * mix(0.78, 1.18, sizeKey);
+    bend += bodyBend * body + trailNormal * (trail * 0.16);
 
-    float rim = smoothstep(0.58, 0.84, bodyDist)
-        * (1.0 - smoothstep(0.89, 1.03, bodyDist));
+    // Rim and highlight were fixed constants, so every bead carried the same
+    // ring and the same specular dot in the same relative spot. Both now vary.
+    float rimIn = mix(0.50, 0.68, h4.x);
+    float rim = smoothstep(rimIn, rimIn + mix(0.14, 0.30, h3.y), bodyDist)
+        * (1.0 - smoothstep(0.90, 1.04, bodyDist));
+    vec2 glintPos = vec2(-0.34, -0.34)
+        + (vec2(h3.y, h4.y) - 0.5) * 0.5;
+    float glintR = mix(0.10, 0.30, h4.y);
     float glint = 1.0 - smoothstep(
-        0.07,
-        0.24,
-        length(bodyUv - vec2(-0.34, -0.34))
+        glintR * 0.3,
+        glintR,
+        length(bodyUv - glintPos)
     );
     shine = max(
         shine,
-        body * (rim * 0.34 + glint * 0.72)
+        body * (
+            rim * mix(0.18, 0.46, h4.x)
+            + glint * mix(0.30, 0.95, h3.x)
+        )
     );
 }
 
@@ -199,7 +229,7 @@ void main(void){
     float gx = floor(lp.x / cell);
     float fx = fract(lp.x / cell) - 0.5;
     float mask = 0.0;
-    vec2 normal = vec2(0.0);
+    vec2 bend = vec2(0.0);
     float shine = 0.0;
 
     // Each column of cells falls at its own rate, only ever slower than Speed,
@@ -223,7 +253,7 @@ void main(void){
                 vec2(colId, gy + float(oy)),
                 vec2(fx - float(ox), fy - float(oy)),
                 dens, colRate,
-                mask, normal, shine
+                mask, bend, shine
             );
         }
     }
@@ -232,12 +262,17 @@ void main(void){
     // compiler and its location lookup would come back null. WebGL 1 has no
     // fragment-stage LOD sampling, so Blur LOD only blurs on WebGPU.
     float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
-    normal *= pixelSize * (8.0 + uSize * 0.18)
-        * clamp(uStrength, 0.0, 1.0) * lodBoost;
+    // bend is in cell units, so scale by the cell size to reach pixels and by
+    // pixelSize to reach texture coords. Strength deliberately does NOT scale
+    // this: it would scale the lens power with it, and any drop whose power
+    // passed through 1 on the way down would collapse to a flat disc. Strength
+    // blends the refracted image instead, which has the same end points and
+    // keeps every drop a proper lens at every setting.
+    vec2 offset = bend * cell * pixelSize * lodBoost;
     vec4 base = sampleBase(vTex);
-    vec4 refr = sampleBase(vTex + normal);
+    vec4 refr = sampleBase(vTex + offset);
     float m = clamp(mask, 0.0, 1.0);
-    vec3 rgb = mix(base.rgb, refr.rgb, m);
+    vec3 rgb = mix(base.rgb, refr.rgb, m * clamp(uStrength, 0.0, 1.0));
     rgb += vec3(shine * 0.075 + m * 0.010);
     gl_FragColor = vec4(rgb, max(base.a, m * 0.2));
 }

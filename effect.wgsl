@@ -68,7 +68,7 @@ fn addDrop(
     cellDensity: f32,
     speedFactor: f32,
     mask0: f32,
-    normal0: vec2<f32>,
+    bend0: vec2<f32>,
     shine0: f32
 ) -> vec4<f32> {
     let variation = clamp(shaderParams.variation, 0.0, 1.0);
@@ -82,7 +82,7 @@ fn addDrop(
     // five sines and a dozen smoothsteps. At the default density only about
     // 7% of cells hold a drop, so this is where nearly all the cost was.
     if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > cellDensity) {
-        return vec4<f32>(mask0, normal0.x, normal0.y, shine0);
+        return vec4<f32>(mask0, bend0.x, bend0.y, shine0);
     }
 
     let h0 = hash22(id + vec2<f32>(shaderParams.seed * 3.1));
@@ -93,6 +93,16 @@ fn addDrop(
     let h2 = hash22(
         id + vec2<f32>(41.2, 13.9)
             + vec2<f32>(shaderParams.seed * 11.3)
+    );
+    // Optical properties get their own entropy. These two only run for cells
+    // that actually hold a drop, so they cost about 1.3 hashes per pixel.
+    let h3 = hash22(
+        id.yx + vec2<f32>(7.7, 53.1)
+            + vec2<f32>(shaderParams.seed * 23.9)
+    );
+    let h4 = hash22(
+        id + vec2<f32>(67.3, 29.5)
+            + vec2<f32>(shaderParams.seed * 31.7)
     );
 
     var center = h0 - vec2<f32>(0.5);
@@ -129,7 +139,9 @@ fn addDrop(
         + sin((bodyUv.x - bodyUv.y) * 6.0 + h2.y * TAU) * 0.012
     );
     let bodyDist = length(bodyUv) / max(surface, 0.90);
-    let body = 1.0 - smoothstep(0.70, 1.0, bodyDist);
+    // Per-drop edge softness: some beads sit crisp on the glass, others read as
+    // flatter, half-wetted smears.
+    let body = 1.0 - smoothstep(mix(0.52, 0.86, h3.x), 1.0, bodyDist);
 
     let smearClass = max(
         runner,
@@ -193,22 +205,42 @@ fn addDrop(
         trailX / max(widthAtY * widthAtY, 0.001),
         -0.08
     ));
-    let dropNormal = bodyNormal * body + trailNormal * trail;
-    let addedNormal = safeNormalize(dropNormal)
-        * max(body, trail) * mix(0.78, 1.18, sizeKey);
-    let rim = smoothstep(0.58, 0.84, bodyDist)
-        * (1.0 - smoothstep(0.89, 1.03, bodyDist));
+    // A bead is a lens, not a smudge: it samples the scene mirrored and
+    // magnified about its own centre. The previous code normalised this
+    // vector, so every drop bent the background by an identical amount and
+    // they all read the same. Offsetting by -d instead keeps the magnitude
+    // proportional to distance from the centre, which is what inverts the
+    // image, and refractive power varies per drop so no two beads match.
+    // The drop samples at centre + (1-power)*d, so power 2 is exact inversion,
+    // and the range is kept clear of 1 where every ray would collapse onto the
+    // centre and the bead would flatten into a disc of one colour.
+    let lensPower = mix(1.45, 3.1, h3.x);
+    let lensVec = -vec2<f32>(d.x - centerBend, d.y) * lensPower;
+    // Toward the rim the surface turns steep, so hand over to an edge bend.
+    let edgeVec = bodyNormal * mix(0.06, 0.22, sizeKey);
+    let edgeMix = smoothstep(0.40, 0.98, bodyDist);
+    let bodyBend = mix(lensVec, lensVec * 0.30 + edgeVec, edgeMix);
+    let addedBend = bodyBend * body + trailNormal * (trail * 0.16);
+
+    // Rim and highlight were fixed constants, so every bead carried the same
+    // ring and the same specular dot in the same relative spot. Both now vary.
+    let rimIn = mix(0.50, 0.68, h4.x);
+    let rim = smoothstep(rimIn, rimIn + mix(0.14, 0.30, h3.y), bodyDist)
+        * (1.0 - smoothstep(0.90, 1.04, bodyDist));
+    let glintPos = vec2<f32>(-0.34, -0.34)
+        + (vec2<f32>(h3.y, h4.y) - vec2<f32>(0.5)) * 0.5;
+    let glintR = mix(0.10, 0.30, h4.y);
     let glint = 1.0 - smoothstep(
-        0.07,
-        0.24,
-        length(bodyUv - vec2<f32>(-0.34, -0.34))
+        glintR * 0.3,
+        glintR,
+        length(bodyUv - glintPos)
     );
     let addedShine = body
-        * (rim * 0.34 + glint * 0.72);
+        * (rim * mix(0.18, 0.46, h4.x) + glint * mix(0.30, 0.95, h3.x));
     return vec4<f32>(
         max(mask0, a),
-        normal0.x + addedNormal.x,
-        normal0.y + addedNormal.y,
+        bend0.x + addedBend.x,
+        bend0.y + addedBend.y,
         max(shine0, addedShine)
     );
 }
@@ -262,18 +294,25 @@ fn main(input: FragmentInput) -> FragmentOutput {
     }
 
     let mask = acc.x;
-    var normal = acc.yz;
     let shine = acc.w;
-
-    normal = normal * pixelSize * (8.0 + shaderParams.size * 0.18)
-        * clamp(shaderParams.strength, 0.0, 1.0);
+    // acc.yz is in cell units, so scale by the cell size to reach pixels and by
+    // pixelSize to reach texture coords. Strength deliberately does NOT scale
+    // this: it would scale the lens power with it, and any drop whose power
+    // passed through 1 on the way down would collapse to a flat disc. Strength
+    // blends the refracted image instead, which has the same end points and
+    // keeps every drop a proper lens at every setting.
+    let offset = acc.yz * cell * pixelSize;
     let base = sampleBase(input.fragUV);
     let m = clamp(mask, 0.0, 1.0);
     // Skip the refracted fetch where there is no drop. sampleBase takes an
     // explicit LOD, so this is safe in non-uniform control flow.
     var refracted = base.rgb;
     if (m > 0.0) {
-        refracted = mix(base.rgb, sampleBase(input.fragUV + normal).rgb, m);
+        refracted = mix(
+            base.rgb,
+            sampleBase(input.fragUV + offset).rgb,
+            m * clamp(shaderParams.strength, 0.0, 1.0)
+        );
     }
     let rgb = refracted + vec3<f32>(shine * 0.075 + m * 0.010);
     var output: FragmentOutput;

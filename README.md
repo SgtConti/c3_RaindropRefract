@@ -35,3 +35,18 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 ## Suggested layer setup
 
 Apply the effect to a transparent layer above the scene to refract everything beneath that layer.
+
+## Performance
+
+The effect is fill-rate bound, so cost scales with the on-screen area it covers.
+
+- **Density** is the main cost control. Each pixel tests a 3×3 block of drop cells, and only cells that actually hold a drop run the full drop maths.
+- **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
+- **Blur LOD** only blurs on WebGPU. WebGL 1 has no fragment-stage LOD sampling, so on WebGL it just nudges refraction strength very slightly.
+
+## Changes in 1.1.1
+
+Behaviour is unchanged apart from two things, both visible only at high **Smear**:
+
+- **Long wet tracks no longer truncate.** A track could reach further than the 3×3 cell window that gets sampled, so its far end appeared or vanished depending on how the drop happened to line up with the cell grid. Track reach is now capped to what the window covers, which makes long tracks a consistent length. The longest tracks are somewhat shorter than before as a result.
+- **Drop layout is reshuffled.** `hash22` used one constant where it needs three, which left the two returned components sharing a source and measurably worsened their joint distribution. Fixing it changes which cells hold drops, so an existing scene will have its drops in different places. Use **Seed** if you want to hunt for a particular arrangement.

@@ -25,6 +25,8 @@ uniform float uSeed;
 uniform float uVariation;
 uniform float uSmear;
 uniform float uSpeedVar;
+uniform float uFog;
+uniform float uDew;
 
 const float TAU = 6.28318530718;
 
@@ -54,6 +56,63 @@ vec4 sampleBase(vec2 uv){
     return front + back * (1.0 - front.a);
 }
 
+// Disc blur on a golden-angle spiral. This is the fogged glass: without it a
+// drop is just a lens over an already-sharp scene, which is why drops read as
+// a minor detail rather than as water on a window.
+vec4 sampleBlur(vec2 uv, vec2 radius, float jitter){
+    vec4 acc = sampleBase(uv);
+    for (int i = 1; i < 20; i++){
+        float fi = float(i);
+        float ang = fi * 2.39996323 + jitter;
+        float rad = sqrt(fi / 19.0);
+        acc += sampleBase(uv + vec2(cos(ang), sin(ang)) * rad * radius);
+    }
+    return acc / 20.0;
+}
+
+// Static condensation beads. They do not fall and carry no track; they sit on
+// the glass as little lenses and hold their patch clear of the fog.
+void addDew(
+    vec2 id,
+    vec2 f,
+    float dewDensity,
+    float unitScale,
+    inout float mask,
+    inout vec2 bend,
+    inout float shine,
+    inout float wipe
+){
+    if (hash12(id + vec2(uSeed * 13.0 + 4.7)) > dewDensity)
+        return;
+
+    vec2 g0 = hash22(id + vec2(uSeed * 3.7));
+    vec2 g1 = hash22(id.yx + vec2(23.1, 9.9) + vec2(uSeed * 7.1));
+
+    vec2 c = (g0 - 0.5) * 0.66;
+    vec2 d = f - c;
+    float r = mix(0.14, 0.40, g1.x * g1.x);
+    float dist = length(d) / max(r, 0.01);
+    float body = 1.0 - smoothstep(mix(0.55, 0.85, g1.y), 1.0, dist);
+    if (body <= 0.0)
+        return;
+
+    // Same lens rule as the falling drops, kept clear of power 1.
+    float lensPower = mix(1.6, 3.0, g0.y);
+    bend += -d * (lensPower * body * unitScale);
+
+    float rim = smoothstep(0.55, 0.86, dist)
+        * (1.0 - smoothstep(0.90, 1.06, dist));
+    vec2 glintPos = vec2(-0.30, -0.30) + (g1 - 0.5) * 0.5;
+    float glint = 1.0 - smoothstep(
+        0.06,
+        mix(0.14, 0.30, g0.x),
+        length(d / max(r, 0.01) - glintPos)
+    );
+    shine = max(shine, body * (rim * 0.26 + glint * mix(0.35, 0.95, g1.y)));
+    mask = max(mask, body);
+    wipe = max(wipe, body);
+}
+
 void addDrop(
     vec2 id,
     vec2 f,
@@ -61,7 +120,8 @@ void addDrop(
     float speedFactor,
     inout float mask,
     inout vec2 bend,
-    inout float shine
+    inout float shine,
+    inout float wipe
 ){
     float variation = clamp(uVariation, 0.0, 1.0);
     // A slow, clinging drop leaves a shorter and fainter track than one that is
@@ -166,6 +226,13 @@ void addDrop(
 
     float a = max(body, trail);
     mask = max(mask, a);
+    // Where water is or has just been, the glass is wiped clear of fog. This is
+    // deliberately wider and softer than the visible track: the drop clears a
+    // band, it does not only clear the bright core of its own trail.
+    wipe = max(wipe, max(
+        body,
+        trailGate * (1.0 - smoothstep(widthAtY * 1.5, widthAtY * 3.0, abs(trailX)))
+    ));
 
     vec2 bodyNormal = safeNormalize(vec2(
         (d.x - centerBend) / max(sx * sx, 0.001),
@@ -231,6 +298,7 @@ void main(void){
     float mask = 0.0;
     vec2 bend = vec2(0.0);
     float shine = 0.0;
+    float wipe = 0.0;
 
     // Each column of cells falls at its own rate, only ever slower than Speed,
     // so raising the spread slows part of the rain instead of speeding the rest
@@ -253,14 +321,31 @@ void main(void){
                 vec2(colId, gy + float(oy)),
                 vec2(fx - float(ox), fy - float(oy)),
                 dens, colRate,
-                mask, bend, shine
+                mask, bend, shine, wipe
             );
         }
     }
 
-    // Kept so uBlurLod stays referenced: an unused uniform is stripped by the
-    // compiler and its location lookup would come back null. WebGL 1 has no
-    // fragment-stage LOD sampling, so Blur LOD only blurs on WebGPU.
+    // Condensation sits still on the glass, so it uses the layout position
+    // directly with no fall and no wind drift, on its own finer grid.
+    float dew = clamp(uDew, 0.0, 1.0);
+    if (dew > 0.002){
+        float dcell = cell * 0.30;
+        vec2 dp = layoutPos + vec2(uSeed * 211.0, uSeed * 97.0);
+        vec2 dg = floor(dp / dcell);
+        vec2 df = fract(dp / dcell) - 0.5;
+        for (int oy = -1; oy <= 1; oy++){
+            for (int ox = -1; ox <= 1; ox++){
+                vec2 o = vec2(float(ox), float(oy));
+                addDew(
+                    dg + o, df - o,
+                    dew * 0.75, 0.30,
+                    mask, bend, shine, wipe
+                );
+            }
+        }
+    }
+
     float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
     // bend is in cell units, so scale by the cell size to reach pixels and by
     // pixelSize to reach texture coords. Strength deliberately does NOT scale
@@ -269,9 +354,32 @@ void main(void){
     // blends the refracted image instead, which has the same end points and
     // keeps every drop a proper lens at every setting.
     vec2 offset = bend * cell * pixelSize * lodBoost;
-    vec4 base = sampleBase(vTex);
-    vec4 refr = sampleBase(vTex + offset);
     float m = clamp(mask, 0.0, 1.0);
+
+    // Fogged glass. The window is blurred everywhere except where water is or
+    // has run, so drops and their tracks read as clear channels through
+    // condensation rather than as lenses over an already-sharp scene. Fog at 0
+    // skips the whole tap loop and costs nothing.
+    float fogAmt = clamp(uFog, 0.0, 1.0);
+    vec4 base;
+    if (fogAmt > 0.002){
+        float clearness = clamp(wipe, 0.0, 1.0);
+        vec2 radius = pixelSize * (fogAmt * 11.0) * (1.0 - clearness);
+        // Rotate the tap spiral per pixel so the disc's undersampling shows up
+        // as dither rather than as rings. Interleaved gradient noise is used
+        // rather than a hash because its pattern is far finer grained, which
+        // matters on hard edges where disc variance is highest.
+        vec2 px = floor(vTex / max(pixelSize, vec2(1e-6)));
+        float jitter = fract(52.9829189
+            * fract(0.06711056 * px.x + 0.00583715 * px.y)) * TAU;
+        base = sampleBlur(vTex, radius, jitter);
+    } else {
+        base = sampleBase(vTex);
+    }
+
+    // The lens sample stays sharp: looking through a bead you see a clear,
+    // inverted image, not the fogged film around it.
+    vec4 refr = sampleBase(vTex + offset);
     vec3 rgb = mix(base.rgb, refr.rgb, m * clamp(uStrength, 0.0, 1.0));
     rgb += vec3(shine * 0.075 + m * 0.010);
     gl_FragColor = vec4(rgb, max(base.a, m * 0.2));

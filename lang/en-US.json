@@ -5,7 +5,7 @@
     "effects": {
       "sgtconti_raindrop_refract": {
         "name": "Raindrop Refraction",
-        "description": "Procedural falling raindrop refraction. Each bead is its own lens with its own refractive power, highlight and fall speed. Supports WebGL and WebGPU.",
+        "description": "Procedural rain on glass. The window fogs with condensation and running drops wipe it clear, each bead its own lens with its own refractive power and fall speed. Optional static dew. Supports WebGL and WebGPU.",
         "parameters": {
           "density": {"name": "Density", "desc": "Chance of raindrops per cell."},
           "size": {"name": "Size", "desc": "Approximate drop cell size in pixels."},

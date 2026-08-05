@@ -15,7 +15,7 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 - Every bead is its own lens: refractive power, edge softness, rim and highlight placement all vary per drop.
 - Fogged glass: the view is blurred by condensation everywhere except where drops sit or have run, so tracks read as clear channels wiped through the haze.
 - Optional dew: static condensation beads clinging to the glass, each a small lens holding its own patch clear.
-- Adjustable density, size, speed, randomness, wind, refraction strength, blur LOD, seed, drop variation and smear amount.
+- Adjustable density, size, speed, speed variation, randomness, wind, refraction strength, fog, dew, blur LOD, seed, drop variation and smear amount.
 - Background sampling for refracted scene content.
 - Uses layout-space coordinates so drops follow layer scrolling.
 

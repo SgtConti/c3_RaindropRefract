@@ -8,7 +8,7 @@
   "author": "SgtConti",
   "website": "https://github.com/SgtConti/c3_RaindropRefract",
   "documentation": "https://github.com/SgtConti/c3_RaindropRefract",
-  "description": "Procedural falling raindrop refraction. Each bead is its own lens with its own refractive power, highlight and fall speed. Supports WebGL and WebGPU.",
+  "description": "Procedural rain on glass. The window fogs with condensation and running drops wipe it clear, each bead its own lens with its own refractive power and fall speed. Optional static dew. Supports WebGL and WebGPU.",
   "category": "other",
   "supported-renderers": ["webgl", "webgpu"],
   "blends-background": true,

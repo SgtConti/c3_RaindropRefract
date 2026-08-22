@@ -30,6 +30,28 @@ uniform float uDew;
 
 const float TAU = 6.28318530718;
 
+// Construct supplies the source and layout rectangles as uniforms. If either
+// arrives degenerate -- which is what a uniform Construct never populated looks
+// like -- the old form divided by its 1e-6 epsilon instead, sending the field
+// coordinate to ~1e8. Neighbouring pixels then land thousands of grid cells
+// apart, so every pixel hashes as its own cell and the effect renders as dense
+// single-pixel static. Dividing through max() also broke a flipped rectangle,
+// since a negative span was clamped to +1e-6. Fall back to texel coordinates,
+// which keeps the look right at the cost of no longer tracking layer scrolling.
+vec2 c3LayoutPos(vec2 uv){
+    vec2 texelPos = uv / max(pixelSize, vec2(1e-6));
+    vec2 srcSpan = srcOriginEnd - srcOriginStart;
+    vec2 layoutSpan = layoutEnd - layoutStart;
+    if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
+        && (abs(layoutSpan.x) > 1e-3 || abs(layoutSpan.y) > 1e-3)){
+        vec2 p = mix(layoutStart, layoutEnd, (uv - srcOriginStart) / srcSpan);
+        // Backstop for anything degenerate the checks above did not catch.
+        if (max(abs(p.x), abs(p.y)) < 1.0e7)
+            return p;
+    }
+    return texelPos;
+}
+
 float hash12(vec2 p){
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -284,8 +306,7 @@ void addDrop(
 }
 
 void main(void){
-    vec2 n = (vTex - srcOriginStart) / max(srcOriginEnd - srcOriginStart, vec2(1e-6));
-    vec2 layoutPos = mix(layoutStart, layoutEnd, n);
+    vec2 layoutPos = c3LayoutPos(vTex);
     float cell = max(14.0, uSize);
     vec2 lp = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
     lp.x -= seconds * uWindX;

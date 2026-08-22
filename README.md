@@ -52,6 +52,10 @@ The effect is fill-rate bound, so cost scales with the on-screen area it covers.
 - **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
 - **Blur LOD** only blurs on WebGPU. WebGL 1 has no fragment-stage LOD sampling, so on WebGL it just nudges refraction strength very slightly.
 
+## Changes in 1.4.1
+
+**Fixes single-pixel static on the WebGL renderer.** Construct supplies the source and layout rectangles as uniforms, and when either arrived degenerate the old code divided by its `1e-6` epsilon guard instead. That sent the field coordinate to about `1e8`, where neighbouring pixels land thousands of drop cells apart, so every pixel hashed as its own cell and produced isolated single-pixel drops. It now falls back to texel coordinates, which renders correctly but does not track layer scrolling. WebGPU was never affected, because it uses Construct's own `c3_getLayoutPos()`. The same change also fixes a flipped source rectangle, which `max()` had been clamping to `+1e-6`. With a healthy rectangle the output is bit-identical to 1.4.0.
+
 ## Changes in 1.4.0
 
 **Fogged glass, with drops wiping it clear.** This is the change that makes drops read as water on a window rather than as lenses sitting on an already-sharp scene. The background is blurred by a condensation haze, and drops plus the band each drop has run through hold their patch sharp — so tracks appear as clear channels through the fog. Controlled by the new **Fog** parameter, default 40%.

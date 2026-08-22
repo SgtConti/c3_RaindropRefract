@@ -15,7 +15,7 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 - Every bead is its own lens: refractive power, edge softness, rim and highlight placement all vary per drop.
 - Fogged glass: the view is blurred by condensation everywhere except where drops sit or have run, so tracks read as clear channels wiped through the haze.
 - Optional dew: static condensation beads clinging to the glass, each a small lens holding its own patch clear.
-- Adjustable density, size, speed, randomness, wind, refraction strength, blur LOD, seed, drop variation and smear amount.
+- Adjustable density, size, speed, speed variation, randomness, wind, refraction strength, fog, dew, blur LOD, seed, drop variation and smear amount.
 - Background sampling for refracted scene content.
 - Uses layout-space coordinates so drops follow layer scrolling.
 
@@ -51,6 +51,10 @@ The effect is fill-rate bound, so cost scales with the on-screen area it covers.
 - **Speed variation** is nearly free. It costs three extra hashes per pixel, not three extra grids of drops.
 - **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
 - **Blur LOD** only blurs on WebGPU. WebGL 1 has no fragment-stage LOD sampling, so on WebGL it just nudges refraction strength very slightly.
+
+## Changes in 1.4.1
+
+**Fixes single-pixel static on the WebGL renderer.** Construct supplies the source and layout rectangles as uniforms, and when either arrived degenerate the old code divided by its `1e-6` epsilon guard instead. That sent the field coordinate to about `1e8`, where neighbouring pixels land thousands of drop cells apart, so every pixel hashed as its own cell and produced isolated single-pixel drops. It now falls back to texel coordinates, which renders correctly but does not track layer scrolling. WebGPU was never affected, because it uses Construct's own `c3_getLayoutPos()`. The same change also fixes a flipped source rectangle, which `max()` had been clamping to `+1e-6`. With a healthy rectangle the output is bit-identical to 1.4.0.
 
 ## Changes in 1.4.0
 

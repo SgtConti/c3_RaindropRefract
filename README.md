@@ -50,7 +50,7 @@ Apply the effect to a transparent layer above the scene to refract everything be
 
 ## Driving the clock from events
 
-Drop positions are a function of the clock, so changing Speed, Wind X or Size while the game runs makes every drop jump to where it would have been at the new rate. To pause the rain, slow it with the game's time scale, or ramp its speed smoothly, leave Speed alone and supply the clock yourself: keep a variable, add `dt` times whatever factor you want each tick, and set the effect's **Time** parameter to it. In the *Set effect parameter* action, Time is parameter index 13 (zero-based, the last one). At its default of `-1` the effect uses the runtime clock. Time is also the one parameter that tweens correctly on a timeline.
+Drop positions are a function of the clock, so changing Speed, Wind X or Size while the game runs makes every drop jump to where it would have been at the new rate. To pause the rain, slow it with the game's time scale, or ramp its speed smoothly, leave Speed alone and supply the clock yourself: keep a variable, add `dt` times whatever factor you want each tick, and set the effect's **Time** parameter to it. In the *Set effect parameter* action, Time is parameter index 13 (zero-based, the last one). At its default of `-1` the effect uses the runtime clock. Time is also the one parameter that tweens correctly on a timeline; start it at `0` rather than tweening up from `-1`, since crossing `0` switches from the runtime clock to your own and the drops jump once.
 
 ## Requirements
 

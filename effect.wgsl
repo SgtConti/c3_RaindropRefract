@@ -29,9 +29,10 @@ struct ShaderParams {
 
 const TAU: f32 = 6.28318530718;
 // Hash inputs are folded into [-HASH_WRAP/2, HASH_WRAP/2) before hashing.
-// The fold is an exact identity inside that range, so the layout is
-// unchanged there; beyond it (cell rows after a long fall, large Seeds) the
-// raw input would have lost the low bits the hash depends on.
+// The fold is an exact identity inside that range (bar the single float just
+// below the top edge, which rounds over), so the layout is unchanged there;
+// beyond it (cell rows after a long fall, large Seeds) the raw input would
+// have lost the low bits the hash depends on.
 const HASH_WRAP: f32 = 16384.0;
 // cos and sin of the golden angle 2.39996323. Each blur tap direction is the
 // previous one rotated by this, which replaces a cos/sin pair per tap.

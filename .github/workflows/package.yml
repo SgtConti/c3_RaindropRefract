@@ -3,18 +3,33 @@ name: Package c3addon
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Validate addon
+        run: python3 .github/scripts/validate.py
       - name: Package addon
         run: |
           mkdir -p dist
-          zip -r "dist/${GITHUB_REPOSITORY##*/}.c3addon" addon.json effect.fx effect.wgsl icon.svg lang
+          zip "dist/${GITHUB_REPOSITORY##*/}.c3addon" $(python3 -c "import json; print(' '.join(json.load(open('addon.json'))['file-list']))")
+          unzip -l "dist/${GITHUB_REPOSITORY##*/}.c3addon"
       - uses: actions/upload-artifact@v4
         with:
           name: c3addon
           path: dist/*.c3addon
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.c3addon --title "$GITHUB_REF_NAME" --generate-notes

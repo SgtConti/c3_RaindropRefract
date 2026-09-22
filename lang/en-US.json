@@ -7,19 +7,20 @@
         "name": "Raindrop Refraction",
         "description": "Procedural rain on glass. The window fogs with condensation and running drops wipe it clear, each bead its own lens with its own refractive power and fall speed. Optional static dew. Supports WebGL and WebGPU.",
         "parameters": {
-          "density": {"name": "Density", "desc": "Chance of raindrops per cell."},
-          "size": {"name": "Size", "desc": "Approximate drop cell size in pixels."},
-          "speed": {"name": "Speed", "desc": "Fall speed multiplier. Sets the speed of the fastest drops."},
-          "randomMag": {"name": "Randomness", "desc": "Random position jitter and wobble amount."},
-          "windX": {"name": "Wind X", "desc": "Horizontal wind drift in pixels per second."},
-          "strength": {"name": "Strength", "desc": "How much of the refracted image shows through each drop. Does not change the lens itself, so drops stay properly lens-like at every setting."},
-          "blurLod": {"name": "Blur LOD", "desc": "Texture LOD used for the refracted sample in WebGPU."},
+          "density": {"name": "Density", "desc": "How much of the glass carries drops. 100% fills about one drop cell in three; the default 22% fills about one cell in fourteen."},
+          "size": {"name": "Size", "desc": "Drop cell size in layout pixels, minimum 14. Larger cells give larger drops and a slightly faster fall. Changing it while running re-rolls every drop."},
+          "speed": {"name": "Speed", "desc": "Fall speed multiplier. Sets the speed of the fastest drops. Changing it while running makes every drop jump; drive Time from events for smooth control."},
+          "randomMag": {"name": "Randomness", "desc": "Amount of slow side-to-side sway on each drop. 1 is a subtle wobble, 0 holds drops still. Drop placement is always random."},
+          "windX": {"name": "Wind X", "desc": "Horizontal wind drift in layout pixels per second. Tracks lean against the drift. Changing it while running makes every drop jump."},
+          "strength": {"name": "Strength", "desc": "How much of the refracted image shows through each drop. 0 leaves only the rims and highlights; 100% shows the full lens."},
+          "blurLod": {"name": "Blur LOD", "desc": "WebGPU only: mip level used for the lens sample. Has no effect on textures without mipmaps, which includes layers and pre-drawn objects. On WebGL it only scales the lens offset by up to 8%."},
           "seed": {"name": "Seed", "desc": "Offsets the random pattern."},
-          "variation": {"name": "Drop Variation", "desc": "Natural variation in bead size, roundness and vertical pear-shaped runners. Optical variation between drops is always on."},
+          "variation": {"name": "Drop variation", "desc": "Natural variation in bead size, roundness and vertical pear-shaped runners. Optical variation between drops is always on."},
           "smear": {"name": "Smear", "desc": "Amount and reach of soft, gravity-aligned wet tracks behind moving drops. Slower drops trail less."},
-          "speedVar": {"name": "Speed variation", "desc": "Spread of individual drop fall speeds. Drops vary downwards from Speed, never above it. 0 makes every drop fall at the same rate."},
+          "speedVar": {"name": "Speed variation", "desc": "Spread of fall speeds between columns of drops. Rates only go below Speed, never above; at 100% the slowest columns run at about a third of Speed. 0 makes every drop fall at the same rate."},
           "fog": {"name": "Fog", "desc": "Condensation haze on the glass. The view is blurred everywhere except where drops sit or have run, so tracks read as clear channels. 0 disables the blur entirely and costs nothing."},
-          "dew": {"name": "Dew", "desc": "Static condensation beads clinging to the glass. They do not fall, carry no tracks, and hold their own patch clear of the fog."}
+          "dew": {"name": "Dew", "desc": "Static condensation beads clinging to the glass. They do not fall, hold their own patch clear of the fog, and are swept away where drops sit or have run."},
+          "time": {"name": "Time", "desc": "Clock the rain runs on, in seconds. -1 uses the runtime clock. Set it from events every tick to pause, slow or speed the rain smoothly; Speed, Wind X and Size jump when changed while running, Time does not."}
         }
       }
     }

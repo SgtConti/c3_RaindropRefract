@@ -37,53 +37,57 @@ const HASH_WRAP: f32 = 16384.0;
 // previous one rotated by this, which replaces a cos/sin pair per tap.
 const GOLDEN: vec2<f32> = vec2<f32>(-0.73736888, 0.67549029);
 
-// Layout position with the same guard as the WebGL shader: a degenerate
-// source or layout rectangle would make Construct's helper divide by zero,
-// so fall back to texel coordinates in that case.
-fn rainLayoutPos(uv: vec2<f32>, pixelSize: vec2<f32>) -> vec2<f32> {
-    let srcSpan = c3Params.srcOriginEnd - c3Params.srcOriginStart;
-    let layoutSpan = c3Params.layoutEnd - c3Params.layoutStart;
-    if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
-        && (abs(layoutSpan.x) > 1e-3 || abs(layoutSpan.y) > 1e-3)) {
-        let p = c3_getLayoutPos(uv);
-        if (max(abs(p.x), abs(p.y)) < 1.0e7) {
-            return p;
-        }
-    }
-    return uv / max(pixelSize, vec2<f32>(1e-6));
-}
+struct LayoutMap {
+    pos: vec2<f32>,
+    uvPerLayout: vec2<f32>,
+};
 
-// Texture coordinates per layout unit: the derivative of the mapping
-// c3_getLayoutPos inverts. Drop bends and the fog radius are measured in
-// layout pixels and this is what carries them into texture coordinates. It
-// is not pixelSize: under layer zoom, on high-DPI displays and with
-// fullscreen scaling one layout pixel spans several texels. Converting with
-// pixelSize weakened the lens on any zoomed or high-DPI view.
-fn rainUvPerLayout(pixelSize: vec2<f32>) -> vec2<f32> {
+// Layout position of a texture coordinate, and the texture coordinates per
+// layout unit that go with it. One decision covers both, so drop positions
+// and the offsets applied to them always share a unit system.
+//
+// The ratio is the derivative of Construct's own mapping, taken from the
+// helper itself so it agrees with the positions whatever rectangles the
+// helper uses. It is not pixelSize: under layer zoom, on high-DPI displays
+// and with fullscreen scaling one layout pixel spans several texels, and
+// converting offsets with pixelSize weakened the lens on every such view.
+// The degenerate-rectangle fallback mirrors the WebGL shader's; it is a
+// backstop that is probably never taken.
+fn rainLayout(uv: vec2<f32>, pixelSize: vec2<f32>) -> LayoutMap {
+    var m: LayoutMap;
     let srcSpan = c3Params.srcOriginEnd - c3Params.srcOriginStart;
     let layoutSpan = c3Params.layoutEnd - c3Params.layoutStart;
     if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
         && abs(layoutSpan.x) > 1e-3 && abs(layoutSpan.y) > 1e-3) {
-        let r = srcSpan / layoutSpan;
-        // Half the texture per layout pixel is already absurd; treat anything
-        // beyond it as a degenerate rectangle.
-        if (max(abs(r.x), abs(r.y)) < 0.5) {
-            return r;
+        let p = c3_getLayoutPos(uv);
+        let layoutPerUv = c3_getLayoutPos(vec2<f32>(1.0, 1.0))
+            - c3_getLayoutPos(vec2<f32>(0.0, 0.0));
+        if (max(abs(p.x), abs(p.y)) < 1.0e7
+            && abs(layoutPerUv.x) > 1e-3 && abs(layoutPerUv.y) > 1e-3) {
+            m.pos = p;
+            m.uvPerLayout = 1.0 / layoutPerUv;
+            return m;
         }
     }
-    return pixelSize;
+    // WebGPU texture y already runs downward like layout y.
+    m.pos = uv / max(pixelSize, vec2<f32>(1e-6));
+    m.uvPerLayout = pixelSize;
+    return m;
 }
 
 // Background coordinate for a foreground coordinate. The SDK places the
 // background in the destStart..destEnd rectangle, matching the foreground's
 // srcStart..srcEnd. For a layer the two coincide, so this is the identity;
 // for an object it is what makes the background land under the object. The
-// map is affine, so offset and blurred samples go through it unchanged.
+// map is affine, so offset and blurred samples go through it unchanged, and
+// like the foreground read they are then held inside the rectangle, which
+// is what the SDK's own clamp helper exists for.
 fn rainBackUv(uv: vec2<f32>) -> vec2<f32> {
     let s = c3Params.srcEnd - c3Params.srcStart;
     let t = c3Params.destEnd - c3Params.destStart;
     if (abs(s.x) > 1e-5 && abs(s.y) > 1e-5 && abs(t.x) > 1e-5 && abs(t.y) > 1e-5) {
-        return mix(c3Params.destStart, c3Params.destEnd, (uv - c3Params.srcStart) / s);
+        let p = mix(c3Params.destStart, c3Params.destEnd, (uv - c3Params.srcStart) / s);
+        return clamp(p, min(c3Params.destStart, c3Params.destEnd), max(c3Params.destStart, c3Params.destEnd));
     }
     return uv;
 }
@@ -350,11 +354,13 @@ fn addDrop(
     // The track is where the drop has been. The field drifts with the wind
     // at windX layout px/s while the drop falls at its own rate, so a drop
     // blown to the right leaves its track up and to the left, leaning by
-    // wind over fall. The old form leaned the track into the wind, by a
-    // fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The clamp
-    // keeps the track and its wipe band inside the reach box above.
+    // wind over fall. The old form leaned the track with the wind, downwind,
+    // by a fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The
+    // clamp keeps the track and its wipe band inside the reach box above; the
+    // fall rate keeps its sign so a negative Speed leans the other way.
     let fallRate = (130.0 + shaderParams.size * 0.8) * shaderParams.speed * speedFactor;
-    let lean = clamp(-shaderParams.windX / max(abs(fallRate), 1.0), -0.35, 0.35);
+    let fallDiv = select(min(fallRate, -1.0), max(fallRate, 1.0), fallRate >= 0.0);
+    let lean = clamp(-shaderParams.windX / fallDiv, -0.35, 0.35);
     var curve = lean * max(behind, 0.0);
     curve = curve + (h0.x - 0.5) * 0.025
         * trailProgress * variation;
@@ -453,8 +459,9 @@ fn main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(f32(dimU.x), f32(dimU.y)),
         vec2<f32>(1.0)
     );
-    let layoutPos = rainLayoutPos(input.fragUV, pixelSize);
-    let uvPerLayout = rainUvPerLayout(pixelSize);
+    let lm = rainLayout(input.fragUV, pixelSize);
+    let layoutPos = lm.pos;
+    let uvPerLayout = lm.uvPerLayout;
     // Time lets events own the clock: at -1 (the default) the runtime clock
     // is used; any value from 0 up is a clock the project advances itself,
     // so it can pause, slow or speed the rain without every drop jumping.
@@ -544,8 +551,10 @@ fn main(input: FragmentInput) -> FragmentOutput {
         // The radius is in layout pixels, converted like the lens offset so
         // the haze keeps its proportion to the drops under zoom and on
         // high-DPI displays. It is capped in texels so the 20-tap disc never
-        // spreads thin enough to show its taps.
-        let radius = min(abs(uvPerLayout) * (fogAmt * 11.0), pixelSize * 16.0)
+        // spreads thin enough to show its taps, and keeps the orientation
+        // sign so the tap spiral lies the same way on both renderers.
+        let radius = sign(uvPerLayout)
+            * min(abs(uvPerLayout) * (fogAmt * 11.0), pixelSize * 16.0)
             * (1.0 - clearness);
         // Rotate the tap spiral per pixel so the disc's undersampling shows up
         // as dither rather than as rings. Interleaved gradient noise is used
@@ -570,9 +579,10 @@ fn main(input: FragmentInput) -> FragmentOutput {
     let glow = acc.shine * 0.075 + m * 0.010;
     let rgb = mix(base.rgb, refr.rgb, w) + vec3<f32>(glow);
     // Premultiplied output: alpha follows the same blend as the colour, plus
-    // the light the highlights add. Over an opaque scene that is 1, as it
-    // was; over nothing, drops now vanish apart from their glints instead of
-    // leaving a faint grey disc.
+    // the light the highlights add. When both samples are opaque, which is
+    // every pixel over an opaque scene, that is 1 as it was; over nothing,
+    // drops now vanish apart from their glints instead of leaving a faint
+    // grey disc, and a lens looking past an edge shows what it refracts.
     var output: FragmentOutput;
     output.color = vec4<f32>(rgb, min(1.0, mix(base.a, refr.a, w) + glow));
     return output;

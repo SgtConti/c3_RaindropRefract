@@ -30,7 +30,7 @@ elif m.group(1) != version:
 
 # A release tag must match the addon version.
 tag = os.environ.get("GITHUB_REF_NAME", "")
-if os.environ.get("GITHUB_REF_TYPE") == "tag" and tag.lstrip("v") != version:
+if os.environ.get("GITHUB_REF_TYPE") == "tag" and re.sub(r"^v", "", tag) != version:
     errors.append(f"tag {tag} does not match addon.json version {version}")
 
 # Parameter ids agree between addon.json and the language file, in order.
@@ -48,8 +48,9 @@ for p in addon["parameters"]:
 wgsl = open("effect.wgsl", encoding="utf-8").read()
 m = re.search(r"struct ShaderParams \{(.*?)\};", wgsl, re.S)
 members = re.findall(r"^\s*(\w+)\s*:\s*(f32|vec3<f32>)", m.group(1), re.M) if m else []
-if len(members) != len(ids):
-    errors.append(f"ShaderParams has {len(members)} members for {len(ids)} parameters")
+member_names = [name for name, _ in members]
+if member_names != ids:
+    errors.append(f"ShaderParams members {member_names} do not match parameter ids {ids}")
 
 if errors:
     print("\n".join("error: " + e for e in errors))

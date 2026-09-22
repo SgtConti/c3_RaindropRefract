@@ -30,7 +30,7 @@
     {"id": "speedVar", "type": "percent", "initial-value": 0.6, "uniform": "uSpeedVar", "interpolatable": true},
     {"id": "fog", "type": "percent", "initial-value": 0.4, "uniform": "uFog", "interpolatable": true},
     {"id": "dew", "type": "percent", "initial-value": 0, "uniform": "uDew", "interpolatable": true},
-    {"id": "time", "type": "float", "initial-value": -1, "uniform": "uTime", "interpolatable": false}
+    {"id": "time", "type": "float", "initial-value": -1, "uniform": "uTime", "interpolatable": true}
   ],
   "file-list": ["addon.json", "effect.fx", "effect.wgsl", "icon.svg", "lang/en-US.json"]
 }

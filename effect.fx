@@ -43,63 +43,54 @@ const float HASH_WRAP = 16384.0;
 // previous one rotated by this, which replaces a cos/sin pair per tap.
 const vec2 GOLDEN = vec2(-0.73736888, 0.67549029);
 
-// Construct supplies the source and layout rectangles as uniforms. If either
-// arrives degenerate -- which is what a uniform Construct never populated looks
-// like -- the old form divided by its 1e-6 epsilon instead, sending the field
-// coordinate to ~1e8. Neighbouring pixels then land thousands of grid cells
-// apart, so every pixel hashes as its own cell and the effect renders as dense
-// single-pixel static. Dividing through max() also broke a flipped rectangle,
-// since a negative span was clamped to +1e-6. Fall back to texel coordinates,
-// which keeps the look right at the cost of no longer tracking layer scrolling.
-vec2 c3LayoutPos(vec2 uv){
-    // WebGL texture y runs upward, layout y runs downward: flip so rain
-    // still falls on this path.
-    vec2 texelPos = vec2(uv.x, 1.0 - uv.y) / max(pixelSize, vec2(1e-6));
-    vec2 srcSpan = srcOriginEnd - srcOriginStart;
-    vec2 layoutSpan = layoutEnd - layoutStart;
-    if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
-        && (abs(layoutSpan.x) > 1e-3 || abs(layoutSpan.y) > 1e-3)){
-        vec2 p = mix(layoutStart, layoutEnd, (uv - srcOriginStart) / srcSpan);
-        // Backstop for anything degenerate the checks above did not catch.
-        if (max(abs(p.x), abs(p.y)) < 1.0e7)
-            return p;
-    }
-    return texelPos;
-}
-
-// Texture coordinates per layout unit: the derivative of the mapping
-// c3LayoutPos inverts. Drop bends and the fog radius are measured in layout
-// pixels and this is what carries them into texture coordinates. It is not
-// pixelSize: under layer zoom, on high-DPI displays and with fullscreen
-// scaling one layout pixel spans several texels, and on the WebGL renderer
-// the texture rectangle runs the opposite way to layout y, so the y component
-// here is negative. Converting with pixelSize inverted every lens vertically
-// on WebGL and weakened it on any zoomed or high-DPI view.
-vec2 c3UvPerLayout(){
+// Layout position of a texture coordinate, and the texture coordinates per
+// layout unit that go with it. One decision covers both, so drop positions
+// and the offsets applied to them always share a unit system.
+//
+// The ratio is the derivative of the position mapping. It is not pixelSize:
+// under layer zoom, on high-DPI displays and with fullscreen scaling one
+// layout pixel spans several texels, and on the WebGL renderer the texture
+// rectangle runs the opposite way to layout y, so the y component here is
+// negative. Converting offsets with pixelSize left every lens un-inverted and
+// squashed vertically on WebGL, and weakened it on any zoomed or high-DPI view.
+//
+// That negative y span is also what broke versions before 1.4.1 on WebGL:
+// they divided by max(span, 1e-6), which clamped it to +1e-6 and sent the
+// field coordinate to ~1e8, where every pixel hashed as its own cell and the
+// effect rendered as single-pixel static. The degenerate-rectangle fallback
+// below is a backstop that is probably never taken; it keeps the look right
+// in texel units at the cost of not tracking layer scrolling.
+vec2 c3Layout(vec2 uv, out vec2 uvPerLayout){
     vec2 srcSpan = srcOriginEnd - srcOriginStart;
     vec2 layoutSpan = layoutEnd - layoutStart;
     if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
         && abs(layoutSpan.x) > 1e-3 && abs(layoutSpan.y) > 1e-3){
-        vec2 r = srcSpan / layoutSpan;
-        // Half the texture per layout pixel is already absurd; treat anything
-        // beyond it as a degenerate rectangle, like c3LayoutPos does.
-        if (max(abs(r.x), abs(r.y)) < 0.5)
-            return r;
+        vec2 p = mix(layoutStart, layoutEnd, (uv - srcOriginStart) / srcSpan);
+        if (max(abs(p.x), abs(p.y)) < 1.0e7){
+            uvPerLayout = srcSpan / layoutSpan;
+            return p;
+        }
     }
-    // Same orientation as the texel fallback in c3LayoutPos.
-    return vec2(pixelSize.x, -pixelSize.y);
+    // WebGL texture y runs upward, layout y runs downward: flip so rain
+    // still falls on this path, with the matching orientation in the ratio.
+    uvPerLayout = vec2(pixelSize.x, -pixelSize.y);
+    return vec2(uv.x, 1.0 - uv.y) / max(pixelSize, vec2(1e-6));
 }
 
 // Background coordinate for a foreground coordinate. The SDK places the
 // background in the destStart..destEnd rectangle, matching the foreground's
 // srcStart..srcEnd. For a layer the two coincide, so this is the identity;
 // for an object it is what makes the background land under the object. The
-// map is affine, so offset and blurred samples go through it unchanged.
+// map is affine, so offset and blurred samples go through it unchanged, and
+// like the foreground read they are then held inside the rectangle, which
+// is what the SDK's own clamp helper exists for.
 vec2 c3BackUv(vec2 uv){
     vec2 s = srcEnd - srcStart;
     vec2 t = destEnd - destStart;
-    if (abs(s.x) > 1e-5 && abs(s.y) > 1e-5 && abs(t.x) > 1e-5 && abs(t.y) > 1e-5)
-        return mix(destStart, destEnd, (uv - srcStart) / s);
+    if (abs(s.x) > 1e-5 && abs(s.y) > 1e-5 && abs(t.x) > 1e-5 && abs(t.y) > 1e-5){
+        vec2 p = mix(destStart, destEnd, (uv - srcStart) / s);
+        return clamp(p, min(destStart, destEnd), max(destStart, destEnd));
+    }
     return uv;
 }
 
@@ -321,11 +312,13 @@ void addDrop(
     // The track is where the drop has been. The field drifts with the wind
     // at uWindX layout px/s while the drop falls at its own rate, so a drop
     // blown to the right leaves its track up and to the left, leaning by
-    // wind over fall. The old form leaned the track into the wind, by a
-    // fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The clamp
-    // keeps the track and its wipe band inside the reach box above.
+    // wind over fall. The old form leaned the track with the wind, downwind,
+    // by a fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The
+    // clamp keeps the track and its wipe band inside the reach box above; the
+    // fall rate keeps its sign so a negative Speed leans the other way.
     float fallRate = (130.0 + uSize * 0.8) * uSpeed * speedFactor;
-    float lean = clamp(-uWindX / max(abs(fallRate), 1.0), -0.35, 0.35);
+    float fallDiv = fallRate >= 0.0 ? max(fallRate, 1.0) : min(fallRate, -1.0);
+    float lean = clamp(-uWindX / fallDiv, -0.35, 0.35);
     float curve = lean * max(behind, 0.0);
     curve += (h0.x - 0.5) * 0.025
         * trailProgress * variation;
@@ -420,8 +413,8 @@ void addDrop(
 }
 
 void main(void){
-    vec2 layoutPos = c3LayoutPos(vTex);
-    vec2 uvPerLayout = c3UvPerLayout();
+    vec2 uvPerLayout;
+    vec2 layoutPos = c3Layout(vTex, uvPerLayout);
     float cell = max(14.0, uSize);
     // Time lets events own the clock: at -1 (the default) the runtime clock
     // is used; any value from 0 up is a clock the project advances itself,
@@ -510,8 +503,10 @@ void main(void){
         // The radius is in layout pixels, converted like the lens offset so
         // the haze keeps its proportion to the drops under zoom and on
         // high-DPI displays. It is capped in texels so the 20-tap disc never
-        // spreads thin enough to show its taps.
-        vec2 radius = min(abs(uvPerLayout) * (fogAmt * 11.0), pixelSize * 16.0)
+        // spreads thin enough to show its taps, and keeps the orientation
+        // sign so the tap spiral lies the same way on both renderers.
+        vec2 radius = sign(uvPerLayout)
+            * min(abs(uvPerLayout) * (fogAmt * 11.0), pixelSize * 16.0)
             * (1.0 - clearness);
         // Rotate the tap spiral per pixel so the disc's undersampling shows up
         // as dither rather than as rings. Interleaved gradient noise is used
@@ -535,8 +530,9 @@ void main(void){
     float glow = shine * 0.075 + m * 0.010;
     vec3 rgb = mix(base.rgb, refr.rgb, w) + vec3(glow);
     // Premultiplied output: alpha follows the same blend as the colour, plus
-    // the light the highlights add. Over an opaque scene that is 1, as it
-    // was; over nothing, drops now vanish apart from their glints instead of
-    // leaving a faint grey disc.
+    // the light the highlights add. When both samples are opaque, which is
+    // every pixel over an opaque scene, that is 1 as it was; over nothing,
+    // drops now vanish apart from their glints instead of leaving a faint
+    // grey disc, and a lens looking past an edge shows what it refracts.
     gl_FragColor = vec4(rgb, min(1.0, mix(base.a, refr.a, w) + glow));
 }

@@ -24,9 +24,9 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 | Parameter | Description |
 |---|---|
 | Density | How much of the glass carries drops. 100% fills about one drop cell in three; the default 22% fills about one cell in fourteen. |
-| Size | Drop cell size in layout pixels, minimum 14. Larger cells give larger drops and a slightly faster fall. Changing it while running re-rolls every drop. |
+| Size | Drop cell size in layout pixels; values below 14 are clamped for the cell. Larger values give larger drops and a slightly faster fall. Changing it while running re-rolls every drop. |
 | Speed | Fall speed multiplier. Sets the speed of the fastest drops. Changing it while running makes every drop jump; drive Time from events for smooth control. |
-| Randomness | Amount of slow side-to-side sway on each drop. 1 is a subtle wobble, 0 holds drops still. Drop placement is always random. |
+| Randomness | Amount of slow side-to-side sway on each drop. 1 is a subtle wobble, 0 removes the sway. Drop placement is always random. |
 | Wind X | Horizontal wind drift in layout pixels per second. Tracks lean against the drift. Changing it while running makes every drop jump. |
 | Strength | How much of the refracted image shows through each drop. 0 leaves only the rims and highlights; 100% shows the full lens. |
 | Blur LOD | WebGPU only: mip level used for the lens sample. Has no effect on textures without mipmaps, which includes layers and pre-drawn objects. On WebGL it only scales the lens offset by up to 8%. |
@@ -36,7 +36,7 @@ Construct 3 effect addon for procedural falling raindrop refraction. It supports
 | Speed variation | Spread of fall speeds between columns of drops. Rates only go below Speed, never above; at 100% the slowest columns run at about a third of Speed. `0` makes every drop fall at the same rate. |
 | Fog | Condensation haze on the glass. The view is blurred everywhere except where drops sit or have run, so tracks read as clear channels. `0` disables the blur entirely and costs nothing. |
 | Dew | Static condensation beads clinging to the glass. They do not fall, hold their own patch clear of the fog, and are swept away where drops sit or have run. |
-| Time | Clock the rain runs on, in seconds. `-1` uses the runtime clock. Set it from events every tick to pause, slow or speed the rain smoothly; Speed, Wind X and Size jump when changed while running, Time does not. |
+| Time | Clock the rain runs on, in seconds. `-1` uses the runtime clock. Set it from events every tick (parameter index 13) to pause, slow or speed the rain smoothly; Speed, Wind X and Size jump when changed while running, Time does not. |
 
 ## Suggested layer setup
 
@@ -44,13 +44,13 @@ Apply the effect to a transparent layer above the scene to refract everything be
 
 - The scene beneath should be opaque. Like every background-blending effect, the output is composited over the background again, so semi-transparent content on a transparent layout background reads more opaque under the glass.
 - Anything placed on the effect layer itself is treated as part of the scene behind the glass: it is fogged and refracted too. Put HUD or overlay objects on a layer above.
-- The effect can go on a layer or an object, not on the layout. On an object it covers the object's whole bounding box, transparent pixels included.
+- Construct does not allow background-blending effects on the layout itself, so put it on a layer or an object. On an object it covers the object's whole bounding box, transparent pixels included.
 - Rotated layers are not supported: the drop field does not turn with the layer angle.
 - Drops, tracks, lens strength and fog radius are all in layout pixels, so the look holds under layer zoom, fullscreen scaling and high-DPI displays.
 
 ## Driving the clock from events
 
-Drop positions are a function of the clock, so changing Speed, Wind X or Size while the game runs makes every drop jump to where it would have been at the new rate. To pause the rain, slow it with the game's time scale, or ramp its speed smoothly, leave Speed alone and supply the clock yourself: keep a variable, add `dt` times whatever factor you want each tick, and set the effect's **Time** parameter to it. At its default of `-1` the effect uses the runtime clock.
+Drop positions are a function of the clock, so changing Speed, Wind X or Size while the game runs makes every drop jump to where it would have been at the new rate. To pause the rain, slow it with the game's time scale, or ramp its speed smoothly, leave Speed alone and supply the clock yourself: keep a variable, add `dt` times whatever factor you want each tick, and set the effect's **Time** parameter to it. In the *Set effect parameter* action, Time is parameter index 13 (zero-based, the last one). At its default of `-1` the effect uses the runtime clock. Time is also the one parameter that tweens correctly on a timeline.
 
 ## Requirements
 
@@ -74,25 +74,25 @@ The effect is fill-rate bound, so cost scales with the on-screen area it covers.
 
 ## Changes in 1.5.0
 
-**WebGL beads are now real lenses.** Construct's WebGL renderer supplies its texture rectangles with y running the opposite way to layout y (the SDK documents this, and the 1.4.1 fix tripped over exactly that flipped span). The lens offset was added in layout orientation, so on WebGL every bead mirrored the scene sideways but stretched it vertically instead of inverting it. Offsets are now converted with the texture-per-layout ratio taken from the same rectangles that place the drops, which carries the sign. WebGPU was already right and is unchanged. **Existing WebGL projects will look different inside the beads.**
+**WebGL beads are now real lenses.** Construct's WebGL renderer supplies its texture rectangles with y running the opposite way to layout y (the SDK documents this, and the 1.4.1 fix tripped over exactly that flipped span). The lens offset was added in layout orientation, so on WebGL every bead mirrored the scene sideways but showed it upright and squashed vertically instead of inverting it. Offsets are now converted with the texture-per-layout ratio taken from the same rectangles that place the drops, which carries the sign. WebGPU was already right and is unchanged. **Existing WebGL projects will look different inside the beads.**
 
-**Zoom and high-DPI displays.** The same conversion puts lens strength and fog radius in layout pixels. Previously they were in texels, so at 2x layer zoom or on a 2x display the beads kept their size but lost half their optical power, which put a third of them below power 1, the flat-disc collapse 1.3.0 was written to avoid. At 1x the output is identical. The fog disc is capped at 16 texels so the 20 taps never spread thin.
+**Zoom and high-DPI displays.** The same conversion puts lens strength and fog radius in layout pixels. Previously they were in texels, so at 2x layer zoom or on a 2x display the beads kept their size but lost half their optical power, which put a third of them below power 1, the flat-disc collapse 1.3.0 was written to avoid. At 1x the magnitudes are unchanged, so WebGPU output is identical and WebGL differs only by the sign fix above. The fog disc is capped at 16 texels so the 20 taps never spread thin, and it now lies the same way on both renderers.
 
-**Tracks lean the right way in wind.** With Wind X set, the drop field drifts with the wind while the track was drawn leaning into it, by a fixed amount unrelated to the fall rate. The track is where the drop has been, so it now leans against the drift by wind over fall, and slower columns lean more. Only projects with a non-zero Wind X change.
+**Tracks lean the right way in wind.** With Wind X set, the drop field drifts with the wind while the track was drawn leaning with it, downwind, by a fixed amount unrelated to the fall rate. The track is where the drop has been, so it now leans against the drift by wind over fall, and slower columns lean more. Only projects with a non-zero Wind X change.
 
-**Time parameter.** Drop position is a closed form of the clock, so changing Speed, Wind X or Size while running made every drop jump, and the rain could not be paused. The new **Time** parameter lets events supply the clock; see *Driving the clock from events*. Speed, Wind X, Size, Seed and Blur LOD are no longer flagged as interpolatable, since tweening them jumps rather than blends.
+**Time parameter.** Drop position is a closed form of the clock, so changing Speed, Wind X or Size while running made every drop jump, and the rain could not be paused. The new **Time** parameter lets events supply the clock; see *Driving the clock from events*. Speed, Wind X, Size, Seed and Blur LOD are no longer flagged as interpolatable, since tweening them jumps rather than blends. Projects saved before 1.5.0 should pick up Time at its default of `-1` when opened with the new version; if the rain stands still after upgrading, set Time to `-1`.
 
 **Dew is swept by runners.** Beads no longer survive inside a track or under a drop head, where they added a second, off-centre lens to the image. Only projects with Dew above `0` change.
 
-**Track centre seam.** The sideways bend across a track used a normalised vector that saturated within a fraction of a pixel of the centre line, so the sample position flipped sign down the middle of every track. It is now a smooth ramp; only the central pixel or so of each track changes.
+**Track centre seam.** The sideways bend across a track used a normalised vector that saturated within a fraction of a pixel of the centre line, so the sample position flipped sign down the middle of every track. It is now a smooth ramp; a band up to the core width wide at the top of each track changes, plus a sub-pixel vertical shift along its length.
 
-**Cheaper, with identical output.** Cells a drop cannot reach now skip all drop maths including the occupancy hash, dew cells likewise, and the WebGL lens sample is skipped where there is no water. The fog spiral rotates a vector per tap instead of calling `cos` and `sin`, which removes 38 transcendental calls per fogged pixel and changes a few pixels per frame by one 8-bit level.
+**Cheaper, with identical output.** Cells a drop cannot reach now skip all drop maths including the occupancy hash, dew cells likewise, and the WebGL lens sample is skipped where there is no water. The fog spiral rotates a vector per tap instead of calling `cos` and `sin`, which replaces 38 in-loop `cos` and `sin` calls per fogged pixel with one pair and changes a few pixels per frame by one 8-bit level.
 
-**Long runs and large seeds.** Hash inputs are folded into a fixed range so cell rows after hours of fall, and large Seed values, keep full float precision instead of collapsing into repeats. The fold is an exact identity inside the range, so the layout is unchanged for seeds up to about 250 and for the first 40 minutes or so at default settings; beyond that a project sees a reshuffle relative to 1.4.1.
+**Long runs and large seeds.** Hash inputs are folded into a fixed range so cell rows after hours of fall, and large Seed values, keep full float precision instead of collapsing into repeats. The fold is an exact identity inside the range, so the layout is unchanged for seeds up to a little over 230 and for the first 40 minutes or so at default settings; beyond that a project sees a reshuffle relative to 1.4.1.
 
-**Sampling follows the SDK.** The background is read through the source-to-destination rectangle mapping the SDK documents for background-blending effects (the identity for a layer), foreground reads away from the current pixel are clamped to the object's rectangle, and output alpha follows the same blend as the colour plus the highlight light. Identical over an opaque scene; over nothing, drops now vanish apart from their glints instead of leaving a faint grey disc. On WebGPU, Blur LOD now applies only to the lens sample as documented, not to every sample.
+**Sampling follows the SDK.** The background is read through the source-to-destination rectangle mapping the SDK documents for background-blending effects (the identity for a layer), reads away from the current pixel are held inside the object's rectangle on both textures, and output alpha follows the same blend as the colour plus the highlight light. Identical for a layer over an opaque scene; on an object the background now lands under the object and reads beyond its edge are clamped, so object projects change near the object's edges and wherever the background rectangle differs from the foreground one. Over nothing, drops now vanish apart from their glints instead of leaving a faint grey disc. On WebGPU, Blur LOD now applies only to the lens sample as documented, not to every sample.
 
-**Smaller items.** The texel-coordinate fallback for a degenerate rectangle now falls the right way on WebGL and WebGPU has the same guard (though the 1.4.1 static was most likely the flipped rectangle itself, so the fallback is probably never taken). The store category is now Distortion. Parameter descriptions were corrected: Density's scale, speed variation being per column, Randomness being a sway rather than placement jitter, and Size's floor. CI validates the manifest, shaders and strings against each other and publishes a GitHub release for every `v*` tag.
+**Smaller items.** Drop positions and the unit conversion for offsets now come from one decision, so they cannot fall back separately; the texel-coordinate fallback for a degenerate rectangle falls the right way on WebGL and WebGPU has the same guard (though the 1.4.1 static was the flipped WebGL rectangle itself, so the fallback is probably never taken). The store category is now Distortion. Parameter descriptions were corrected: Density's scale, speed variation being per column, Randomness being a sway rather than placement jitter, and Size's floor. CI validates the manifest, shaders and strings against each other and publishes a GitHub release for every `v*` tag.
 
 ## Changes in 1.4.1
 

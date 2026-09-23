@@ -171,7 +171,7 @@ void addDew(
     // hash there; that is most of the eight neighbouring cells.
     if (abs(f.x) >= 0.75 || abs(f.y) >= 0.75)
         return;
-    if (hash12(id + vec2(uSeed * 13.0 + 4.7)) > dewDensity)
+    if (hash12(id + vec2(uSeed * 13.0 + 4.7)) >= dewDensity)
         return;
 
     vec2 g0 = hash22(id + vec2(uSeed * 3.7));
@@ -234,8 +234,9 @@ void addDrop(
     // Bail out before any drop maths runs. The occupancy test was previously
     // only applied to the result, so empty cells still paid for three hashes,
     // five sines and a dozen smoothsteps. At the default density only about
-    // 7% of cells hold a drop, so this is where nearly all the cost was.
-    if (hash12(id + vec2(uSeed * 17.0)) > cellDensity)
+    // 7% of cells hold a drop, so this is where nearly all the cost was. The
+    // test is >= so a hash of exactly 0 cannot pass at Density 0.
+    if (hash12(id + vec2(uSeed * 17.0)) >= cellDensity)
         return;
 
     vec2 h0 = hash22(id + vec2(uSeed * 3.1));
@@ -315,8 +316,10 @@ void addDrop(
     // blown to the right leaves its track up and to the left, leaning by
     // wind over fall. The old form leaned the track with the wind, downwind,
     // by a fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The
-    // clamp keeps the track and its wipe band inside the reach box above; the
-    // fall rate keeps its sign so a negative Speed leans the other way.
+    // clamp keeps the track and its wipe band inside the reach box above; it
+    // is reached at about 59 px/s of wind for the fastest columns at default
+    // Speed. The fall rate keeps its sign, so with a negative Speed the track,
+    // still drawn above the now rising drop, lies along its line of motion.
     float fallRate = (130.0 + uSize * 0.8) * uSpeed * speedFactor;
     float fallDiv = fallRate >= 0.0 ? max(fallRate, 1.0) : min(fallRate, -1.0);
     float lean = clamp(-uWindX / fallDiv, -0.35, 0.35);

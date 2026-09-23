@@ -188,7 +188,7 @@ fn addDew(
     if (abs(f.x) >= 0.75 || abs(f.y) >= 0.75) {
         return acc;
     }
-    if (hash12(id + vec2<f32>(shaderParams.seed * 13.0 + 4.7)) > dewDensity) {
+    if (hash12(id + vec2<f32>(shaderParams.seed * 13.0 + 4.7)) >= dewDensity) {
         return acc;
     }
 
@@ -254,8 +254,9 @@ fn addDrop(
     // Bail out before any drop maths runs. The occupancy test was previously
     // only applied to the result, so empty cells still paid for three hashes,
     // five sines and a dozen smoothsteps. At the default density only about
-    // 7% of cells hold a drop, so this is where nearly all the cost was.
-    if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) > cellDensity) {
+    // 7% of cells hold a drop, so this is where nearly all the cost was. The
+    // test is >= so a hash of exactly 0 cannot pass at Density 0.
+    if (hash12(id + vec2<f32>(shaderParams.seed * 17.0)) >= cellDensity) {
         return acc;
     }
 
@@ -357,8 +358,10 @@ fn addDrop(
     // blown to the right leaves its track up and to the left, leaning by
     // wind over fall. The old form leaned the track with the wind, downwind,
     // by a fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The
-    // clamp keeps the track and its wipe band inside the reach box above; the
-    // fall rate keeps its sign so a negative Speed leans the other way.
+    // clamp keeps the track and its wipe band inside the reach box above; it
+    // is reached at about 59 px/s of wind for the fastest columns at default
+    // Speed. The fall rate keeps its sign, so with a negative Speed the track,
+    // still drawn above the now rising drop, lies along its line of motion.
     let fallRate = (130.0 + shaderParams.size * 0.8) * shaderParams.speed * speedFactor;
     let fallDiv = select(min(fallRate, -1.0), max(fallRate, 1.0), fallRate >= 0.0);
     let lean = clamp(-shaderParams.windX / fallDiv, -0.35, 0.35);

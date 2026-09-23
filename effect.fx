@@ -8,8 +8,12 @@ precision mediump float;
 varying vec2 vTex;
 uniform sampler2D samplerFront;
 uniform sampler2D samplerBack;
+uniform vec2 srcStart;
+uniform vec2 srcEnd;
 uniform vec2 srcOriginStart;
 uniform vec2 srcOriginEnd;
+uniform vec2 destStart;
+uniform vec2 destEnd;
 uniform vec2 layoutStart;
 uniform vec2 layoutEnd;
 uniform vec2 pixelSize;
@@ -27,32 +31,88 @@ uniform float uSmear;
 uniform float uSpeedVar;
 uniform float uFog;
 uniform float uDew;
+uniform float uTime;
 
 const float TAU = 6.28318530718;
+// Hash inputs are folded into [-HASH_WRAP/2, HASH_WRAP/2) before hashing.
+// The fold is an exact identity inside that range (bar the single float just
+// below the top edge, which rounds over), so the layout is unchanged there;
+// beyond it (cell rows after a long fall, large Seeds) the raw input would
+// have lost the low bits the hash depends on.
+const float HASH_WRAP = 16384.0;
+// cos and sin of the golden angle 2.39996323. Each blur tap direction is the
+// previous one rotated by this, which replaces a cos/sin pair per tap.
+const vec2 GOLDEN = vec2(-0.73736888, 0.67549029);
 
-// Construct supplies the source and layout rectangles as uniforms. If either
-// arrives degenerate -- which is what a uniform Construct never populated looks
-// like -- the old form divided by its 1e-6 epsilon instead, sending the field
-// coordinate to ~1e8. Neighbouring pixels then land thousands of grid cells
-// apart, so every pixel hashes as its own cell and the effect renders as dense
-// single-pixel static. Dividing through max() also broke a flipped rectangle,
-// since a negative span was clamped to +1e-6. Fall back to texel coordinates,
-// which keeps the look right at the cost of no longer tracking layer scrolling.
-vec2 c3LayoutPos(vec2 uv){
-    vec2 texelPos = uv / max(pixelSize, vec2(1e-6));
+// Layout position of a texture coordinate, and the texture coordinates per
+// layout unit that go with it. One decision covers both, so drop positions
+// and the offsets applied to them always share a unit system.
+//
+// The ratio is the derivative of the position mapping. It is not pixelSize:
+// under layer zoom, on high-DPI displays and with fullscreen scaling one
+// layout pixel spans several texels, and on the WebGL renderer the texture
+// rectangle runs the opposite way to layout y, so the y component here is
+// negative. Converting offsets with pixelSize left every lens un-inverted and
+// squashed vertically on WebGL, and weakened it on any zoomed or high-DPI view.
+//
+// That negative y span is also what broke versions before 1.4.1 on WebGL:
+// they divided by max(span, 1e-6), which clamped it to +1e-6 and sent the
+// field coordinate to ~1e8, where every pixel hashed as its own cell and the
+// effect rendered as single-pixel static. The degenerate-rectangle fallback
+// below is a backstop that is probably never taken; it keeps the look right
+// in texel units at the cost of not tracking layer scrolling.
+vec2 c3Layout(vec2 uv, out vec2 uvPerLayout){
     vec2 srcSpan = srcOriginEnd - srcOriginStart;
     vec2 layoutSpan = layoutEnd - layoutStart;
     if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
-        && (abs(layoutSpan.x) > 1e-3 || abs(layoutSpan.y) > 1e-3)){
+        && abs(layoutSpan.x) > 1e-3 && abs(layoutSpan.y) > 1e-3){
         vec2 p = mix(layoutStart, layoutEnd, (uv - srcOriginStart) / srcSpan);
-        // Backstop for anything degenerate the checks above did not catch.
-        if (max(abs(p.x), abs(p.y)) < 1.0e7)
+        if (max(abs(p.x), abs(p.y)) < 1.0e7){
+            uvPerLayout = srcSpan / layoutSpan;
             return p;
+        }
     }
-    return texelPos;
+    // WebGL texture y runs upward, layout y runs downward: flip so rain
+    // still falls on this path, with the matching orientation in the ratio.
+    uvPerLayout = vec2(pixelSize.x, -pixelSize.y);
+    return vec2(uv.x, 1.0 - uv.y) / max(pixelSize, vec2(1e-6));
 }
 
-float hash12(vec2 p){
+// Background coordinate for a foreground coordinate. The SDK places the
+// background in the destStart..destEnd rectangle, matching the foreground's
+// srcStart..srcEnd. For a layer the two coincide, so this is the identity;
+// for an object it is what makes the background land under the object. The
+// map is affine, so offset and blurred samples go through it unchanged, and
+// like the foreground read they are then held inside the rectangle, which
+// is what the SDK's own clamp helper exists for.
+vec2 c3BackUv(vec2 uv){
+    vec2 s = srcEnd - srcStart;
+    vec2 t = destEnd - destStart;
+    if (abs(s.x) > 1e-5 && abs(s.y) > 1e-5 && abs(t.x) > 1e-5 && abs(t.y) > 1e-5){
+        vec2 p = mix(destStart, destEnd, (uv - srcStart) / s);
+        return clamp(p, min(destStart, destEnd), max(destStart, destEnd));
+    }
+    return uv;
+}
+
+// Foreground reads away from the current pixel stay inside the rectangle the
+// object was drawn into. For a layer that is the whole view, so nothing
+// changes; for an object it stops the lens and the fog taps reading whatever
+// the intermediate surface holds beyond the object's edge.
+vec2 c3ClampFront(vec2 uv){
+    vec2 lo = min(srcOriginStart, srcOriginEnd);
+    vec2 hi = max(srcOriginStart, srcOriginEnd);
+    if (hi.x - lo.x > 1e-5 && hi.y - lo.y > 1e-5)
+        return clamp(uv, lo, hi);
+    return uv;
+}
+
+vec2 hashFold(vec2 q){
+    return q - HASH_WRAP * floor((q + HASH_WRAP * 0.5) / HASH_WRAP);
+}
+
+float hash12(vec2 q){
+    vec2 p = hashFold(q);
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
@@ -62,7 +122,8 @@ float hash12(vec2 p){
 // and p3.z are both derived from p.x and stay equal, which measurably worsens
 // the 2D uniformity of the pair (chi-square over an 8x8 grid: 90 vs 71 for an
 // ideal of ~63). Cheap to fix, so the drop layout gets the better distribution.
-vec2 hash22(vec2 p){
+vec2 hash22(vec2 q){
+    vec2 p = hashFold(q);
     vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy);
@@ -73,8 +134,8 @@ vec2 safeNormalize(vec2 v){
 }
 
 vec4 sampleBase(vec2 uv){
-    vec4 front = texture2D(samplerFront, uv);
-    vec4 back = texture2D(samplerBack, uv);
+    vec4 front = texture2D(samplerFront, c3ClampFront(uv));
+    vec4 back = texture2D(samplerBack, c3BackUv(uv));
     return front + back * (1.0 - front.a);
 }
 
@@ -83,11 +144,11 @@ vec4 sampleBase(vec2 uv){
 // a minor detail rather than as water on a window.
 vec4 sampleBlur(vec2 uv, vec2 radius, float jitter){
     vec4 acc = sampleBase(uv);
+    vec2 dir = vec2(cos(jitter), sin(jitter));
     for (int i = 1; i < 20; i++){
-        float fi = float(i);
-        float ang = fi * 2.39996323 + jitter;
-        float rad = sqrt(fi / 19.0);
-        acc += sampleBase(uv + vec2(cos(ang), sin(ang)) * rad * radius);
+        dir = vec2(dir.x * GOLDEN.x - dir.y * GOLDEN.y,
+                   dir.x * GOLDEN.y + dir.y * GOLDEN.x);
+        acc += sampleBase(uv + dir * (sqrt(float(i) / 19.0) * radius));
     }
     return acc / 20.0;
 }
@@ -99,22 +160,37 @@ void addDew(
     vec2 f,
     float dewDensity,
     float unitScale,
+    float swept,
     inout float mask,
     inout vec2 bend,
     inout float shine,
     inout float wipe
 ){
-    if (hash12(id + vec2(uSeed * 13.0 + 4.7)) > dewDensity)
+    // A bead's centre lies within a third of a cell of the cell centre and
+    // its radius is at most 0.4, so beyond 0.75 it is exactly zero. Skip the
+    // hash there; that is most of the eight neighbouring cells.
+    if (abs(f.x) >= 0.75 || abs(f.y) >= 0.75)
+        return;
+    if (hash12(id + vec2(uSeed * 13.0 + 4.7)) >= dewDensity)
         return;
 
     vec2 g0 = hash22(id + vec2(uSeed * 3.7));
-    vec2 g1 = hash22(id.yx + vec2(23.1, 9.9) + vec2(uSeed * 7.1));
-
     vec2 c = (g0 - 0.5) * 0.66;
     vec2 d = f - c;
+    // Beyond the largest radius the body is exactly zero, so the second hash
+    // is only paid for pixels the bead can touch.
+    if (dot(d, d) >= 0.1681)
+        return;
+    vec2 g1 = hash22(id.yx + vec2(23.1, 9.9) + vec2(uSeed * 7.1));
+
     float r = mix(0.14, 0.40, g1.x * g1.x);
     float dist = length(d) / max(r, 0.01);
     float body = 1.0 - smoothstep(mix(0.55, 0.85, g1.y), 1.0, dist);
+    // A runner sweeps the condensation out of its path, and a bead under a
+    // drop has merged into it, so beads fade wherever water is or has just
+    // run. Without this a bead kept its own lens inside a track and under a
+    // drop head, which read as a second, off-centre bulge in the image.
+    body *= 1.0 - swept;
     if (body <= 0.0)
         return;
 
@@ -140,37 +216,56 @@ void addDrop(
     vec2 f,
     float cellDensity,
     float speedFactor,
+    float t,
     inout float mask,
     inout vec2 bend,
     inout float shine,
     inout float wipe
 ){
-    float variation = clamp(uVariation, 0.0, 1.0);
-    // A slow, clinging drop leaves a shorter and fainter track than one that is
-    // running. Without this a slow column would trail like a fast one.
-    float smearAmount = clamp(uSmear, 0.0, 1.0) * mix(0.35, 1.0, speedFactor);
+    // A drop reaches at most half a cell sideways, 0.8 of a cell below its
+    // centre (the body) and one cell above it (the track), and its centre
+    // sits within half a cell of the cell centre plus the sway. Pixels
+    // further out than that get exactly zero from every term below, so they
+    // can skip even the occupancy hash.
+    float sway = 0.035 * abs(uRandomMag);
+    if (abs(f.x) >= 1.0 + sway || f.y >= 1.3)
+        return;
 
     // Bail out before any drop maths runs. The occupancy test was previously
     // only applied to the result, so empty cells still paid for three hashes,
     // five sines and a dozen smoothsteps. At the default density only about
-    // 7% of cells hold a drop, so this is where nearly all the cost was.
-    if (hash12(id + vec2(uSeed * 17.0)) > cellDensity)
+    // 7% of cells hold a drop, so this is where nearly all the cost was. The
+    // test is >= so a hash of exactly 0 cannot pass at Density 0.
+    if (hash12(id + vec2(uSeed * 17.0)) >= cellDensity)
         return;
 
     vec2 h0 = hash22(id + vec2(uSeed * 3.1));
     vec2 h1 = hash22(id.yx + vec2(19.7, 7.3) + vec2(uSeed * 5.7));
     vec2 h2 = hash22(id + vec2(41.2, 13.9) + vec2(uSeed * 11.3));
-    // Optical properties get their own entropy. These two only run for cells
-    // that actually hold a drop, so they cost about 1.3 hashes per pixel.
-    vec2 h3 = hash22(id.yx + vec2(7.7, 53.1) + vec2(uSeed * 23.9));
-    vec2 h4 = hash22(id + vec2(67.3, 29.5) + vec2(uSeed * 31.7));
 
     vec2 center = h0 - 0.5;
     center.x += sin(
-        seconds * mix(0.45, 0.85, h1.x) + h2.y * TAU
+        t * mix(0.45, 0.85, h1.x) + h2.y * TAU
     ) * 0.035 * uRandomMag;
 
     vec2 d = f - center;
+    // The same reach, now measured from the drop's actual centre. Every
+    // body, track and wipe term is identically zero outside this box, so
+    // returning here changes nothing downstream; it just means only pixels
+    // the drop can touch pay for the optics and the rest of the maths.
+    if (abs(d.x) >= 0.5 || d.y >= 0.8 || d.y <= -1.0)
+        return;
+
+    // Optical properties get their own entropy. These two only run for cells
+    // that actually hold a drop and pixels the drop reaches.
+    vec2 h3 = hash22(id.yx + vec2(7.7, 53.1) + vec2(uSeed * 23.9));
+    vec2 h4 = hash22(id + vec2(67.3, 29.5) + vec2(uSeed * 31.7));
+
+    float variation = clamp(uVariation, 0.0, 1.0);
+    // A slow, clinging drop leaves a shorter and fainter track than one that is
+    // running. Without this a slow column would trail like a fast one.
+    float smearAmount = clamp(uSmear, 0.0, 1.0) * mix(0.35, 1.0, speedFactor);
+
     float sizeKey = h1.y * h1.y;
     float runner = smoothstep(0.54, 0.84, h2.x)
         * smoothstep(0.24, 0.62, sizeKey);
@@ -216,8 +311,19 @@ void addDrop(
     );
     float trailGate = smoothstep(-0.03, 0.04, behind)
         * (1.0 - smoothstep(0.80, 1.0, trailProgress));
-    float curve = clamp(uWindX * 0.0015, -0.05, 0.05)
-        * trailProgress;
+    // The track is where the drop has been. The field drifts with the wind
+    // at uWindX layout px/s while the drop falls at its own rate, so a drop
+    // blown to the right leaves its track up and to the left, leaning by
+    // wind over fall. The old form leaned the track with the wind, downwind,
+    // by a fixed 0.0015 per px/s capped at 0.05 whatever the fall rate. The
+    // clamp keeps the track and its wipe band inside the reach box above; it
+    // is reached at about 59 px/s of wind for the fastest columns at default
+    // Speed. The fall rate keeps its sign, so with a negative Speed the track,
+    // still drawn above the now rising drop, lies along its line of motion.
+    float fallRate = (130.0 + uSize * 0.8) * uSpeed * speedFactor;
+    float fallDiv = fallRate >= 0.0 ? max(fallRate, 1.0) : min(fallRate, -1.0);
+    float lean = clamp(-uWindX / fallDiv, -0.35, 0.35);
+    float curve = lean * max(behind, 0.0);
     curve += (h0.x - 0.5) * 0.025
         * trailProgress * variation;
     curve += sin(trailProgress * TAU + h2.y * TAU)
@@ -277,10 +383,15 @@ void addDrop(
     float edgeMix = smoothstep(0.40, 0.98, bodyDist);
     vec2 bodyBend = mix(lensVec, lensVec * 0.30 + edgeVec, edgeMix);
 
-    vec2 trailNormal = safeNormalize(vec2(
-        trailX / max(widthAtY * widthAtY, 0.001),
+    // Sideways bend across the track. This was a normalised vector whose x
+    // term saturated within a fraction of a pixel of the centre line, so the
+    // sample position flipped sign across the middle of every track and left
+    // a seam down it. A clamped ramp reaches the same value at half the core
+    // width and passes smoothly through the centre.
+    vec2 trailNormal = vec2(
+        clamp(trailX / (0.5 * widthAtY), -1.0, 1.0),
         -0.08
-    ));
+    );
     bend += bodyBend * body + trailNormal * (trail * 0.16);
 
     // Rim and highlight were fixed constants, so every bead carried the same
@@ -306,10 +417,15 @@ void addDrop(
 }
 
 void main(void){
-    vec2 layoutPos = c3LayoutPos(vTex);
+    vec2 uvPerLayout;
+    vec2 layoutPos = c3Layout(vTex, uvPerLayout);
     float cell = max(14.0, uSize);
+    // Time lets events own the clock: at -1 (the default) the runtime clock
+    // is used; any value from 0 up is a clock the project advances itself,
+    // so it can pause, slow or speed the rain without every drop jumping.
+    float t = uTime < 0.0 ? seconds : uTime;
     vec2 lp = layoutPos + vec2(uSeed * 137.0, uSeed * 73.0);
-    lp.x -= seconds * uWindX;
+    lp.x -= t * uWindX;
     float baseFall = (130.0 + uSize * 0.8) * uSpeed;
     float spread = clamp(uSpeedVar, 0.0, 1.0);
     float dens = clamp(uDensity, 0.0, 1.0) * 0.33;
@@ -333,7 +449,7 @@ void main(void){
             mix(0.34, 1.0, hash12(vec2(colId, 91.7) + uSeed)),
             spread
         );
-        float py = lp.y - seconds * baseFall * colRate;
+        float py = lp.y - t * baseFall * colRate;
         float gy = floor(py / cell);
         float fy = fract(py / cell) - 0.5;
 
@@ -341,16 +457,19 @@ void main(void){
             addDrop(
                 vec2(colId, gy + float(oy)),
                 vec2(fx - float(ox), fy - float(oy)),
-                dens, colRate,
+                dens, colRate, t,
                 mask, bend, shine, wipe
             );
         }
     }
 
     // Condensation sits still on the glass, so it uses the layout position
-    // directly with no fall and no wind drift, on its own finer grid.
+    // directly with no fall and no wind drift, on its own finer grid. It is
+    // told how much the falling water has wiped this pixel, so beads do not
+    // survive inside a track or under a drop.
     float dew = clamp(uDew, 0.0, 1.0);
     if (dew > 0.002){
+        float swept = clamp(wipe, 0.0, 1.0);
         float dcell = cell * 0.30;
         vec2 dp = layoutPos + vec2(uSeed * 211.0, uSeed * 97.0);
         vec2 dg = floor(dp / dcell);
@@ -360,7 +479,7 @@ void main(void){
                 vec2 o = vec2(float(ox), float(oy));
                 addDew(
                     dg + o, df - o,
-                    dew * 0.75, 0.30,
+                    dew * 0.75, 0.30, swept,
                     mask, bend, shine, wipe
                 );
             }
@@ -368,13 +487,13 @@ void main(void){
     }
 
     float lodBoost = 1.0 + 0.02 * clamp(uBlurLod, 0.0, 4.0);
-    // bend is in cell units, so scale by the cell size to reach pixels and by
-    // pixelSize to reach texture coords. Strength deliberately does NOT scale
-    // this: it would scale the lens power with it, and any drop whose power
-    // passed through 1 on the way down would collapse to a flat disc. Strength
-    // blends the refracted image instead, which has the same end points and
-    // keeps every drop a proper lens at every setting.
-    vec2 offset = bend * cell * pixelSize * lodBoost;
+    // bend is in cell units, so scale by the cell size to reach layout pixels
+    // and by uvPerLayout to reach texture coords. Strength deliberately does
+    // NOT scale this: it would scale the lens power with it, and any drop
+    // whose power passed through 1 on the way down would collapse to a flat
+    // disc. Strength blends the refracted image instead, which has the same
+    // end points and keeps every drop a proper lens at every setting.
+    vec2 offset = bend * cell * uvPerLayout * lodBoost;
     float m = clamp(mask, 0.0, 1.0);
 
     // Fogged glass. The window is blurred everywhere except where water is or
@@ -385,7 +504,14 @@ void main(void){
     vec4 base;
     if (fogAmt > 0.002){
         float clearness = clamp(wipe, 0.0, 1.0);
-        vec2 radius = pixelSize * (fogAmt * 11.0) * (1.0 - clearness);
+        // The radius is in layout pixels, converted like the lens offset so
+        // the haze keeps its proportion to the drops under zoom and on
+        // high-DPI displays. It is capped in texels so the 20-tap disc never
+        // spreads thin enough to show its taps, and keeps the orientation
+        // sign so the tap spiral lies the same way on both renderers.
+        vec2 radius = sign(uvPerLayout)
+            * min(abs(uvPerLayout) * (fogAmt * 11.0), pixelSize * 16.0)
+            * (1.0 - clearness);
         // Rotate the tap spiral per pixel so the disc's undersampling shows up
         // as dither rather than as rings. Interleaved gradient noise is used
         // rather than a hash because its pattern is far finer grained, which
@@ -399,9 +525,18 @@ void main(void){
     }
 
     // The lens sample stays sharp: looking through a bead you see a clear,
-    // inverted image, not the fogged film around it.
-    vec4 refr = sampleBase(vTex + offset);
-    vec3 rgb = mix(base.rgb, refr.rgb, m * clamp(uStrength, 0.0, 1.0));
-    rgb += vec3(shine * 0.075 + m * 0.010);
-    gl_FragColor = vec4(rgb, max(base.a, m * 0.2));
+    // inverted image, not the fogged film around it. Where there is no water
+    // the offset is zero and the blend weight is zero, so skip the fetch.
+    vec4 refr = base;
+    if (m > 0.0)
+        refr = sampleBase(vTex + offset);
+    float w = m * clamp(uStrength, 0.0, 1.0);
+    float glow = shine * 0.075 + m * 0.010;
+    vec3 rgb = mix(base.rgb, refr.rgb, w) + vec3(glow);
+    // Premultiplied output: alpha follows the same blend as the colour, plus
+    // the light the highlights add. When both samples are opaque, which is
+    // every pixel over an opaque scene, that is 1 as it was; over nothing,
+    // drops now vanish apart from their glints instead of leaving a faint
+    // grey disc, and a lens looking past an edge shows what it refracts.
+    gl_FragColor = vec4(rgb, min(1.0, mix(base.a, refr.a, w) + glow));
 }

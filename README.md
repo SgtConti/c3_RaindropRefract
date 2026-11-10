@@ -72,6 +72,14 @@ The effect is fill-rate bound, so cost scales with the on-screen area it covers.
 - **Size** sets the cell size, not the cost per pixel. Smaller values mean more cells cross a given area, so more of them are occupied at the same Density.
 - **Blur LOD** only affects the lens sample on WebGPU, and only if the textures have mipmaps, which layers and pre-drawn objects do not. On WebGL it just scales the lens offset by up to 8%.
 
+## Changes in 1.5.2
+
+**Rain falls on WebGL.** On the WebGL renderer the drop field was upside down, so drops and their tracks ran up the screen, on a layer and on an object alike. The WebGL renderer hands the source rectangle over flipped, so `srcStart.y` is the top of what is drawn (GL keeps a rendered image's top row at v = 1), but it also swaps `layoutStart.y` and `layoutEnd.y` as it uploads them, so there `layoutStart.y` is the bottom of the area. Mapping one onto the other as given turned the field over. The layout y range is now taken top-down, whichever way round it arrives, and the texture-per-layout ratio keeps the sign of the source rectangle, so lenses, tracks and fog follow. WebGPU, which maps through `c3_getLayoutPos`, was right and is unchanged. **On WebGL the rain now falls instead of rising; nothing else changes.**
+
+## Changes in 1.5.1
+
+Layout positions on WebGL were taken from `srcOriginStart..srcOriginEnd`, the object's own rectangle, against `layoutStart..layoutEnd`, which belongs to `srcStart..srcEnd`. They now come from `srcStart..srcEnd`, as WebGPU's `c3_getLayoutPos` does. For a layer the two rectangles coincide; on an object they can differ. This alone did not stop the rain rising on WebGL: both rectangles are flipped the same way, see 1.5.2.
+
 ## Changes in 1.5.0
 
 **WebGL beads are now real lenses.** Construct's WebGL renderer supplies its texture rectangles with y running the opposite way to layout y (the SDK documents this, and the 1.4.1 fix tripped over exactly that flipped span). The lens offset was added in layout orientation, so on WebGL every bead mirrored the scene sideways but showed it upright and squashed vertically instead of inverting it. Offsets are now converted with the texture-per-layout ratio taken from the same rectangles that place the drops, which carries the sign. WebGPU was already right and is unchanged. **Existing WebGL projects will look different inside the beads.**

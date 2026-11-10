@@ -61,12 +61,27 @@ const vec2 GOLDEN = vec2(-0.73736888, 0.67549029);
 // effect rendered as single-pixel static. The degenerate-rectangle fallback
 // below is a backstop that is probably never taken; it keeps the look right
 // in texel units at the cost of not tracking layer scrolling.
+//
+// srcStart is the top edge of what is being drawn on both renderers. WebGL
+// gets render-target rectangles flipped (srcStart.y > srcEnd.y, as GL keeps
+// a rendered image's top row at v = 1) and image rectangles as they are;
+// either way srcStart.y is the top. The layout rectangle does not follow
+// that pairing: Construct's WebGL renderer swaps layoutStart.y and
+// layoutEnd.y as it uploads them (SetProgramParameters), so there
+// layoutStart.y is the bottom of the area. Mapping srcStart onto layoutStart
+// as given turned the drop field over and rain ran up the screen on WebGL
+// (the Linux build) in every version up to 1.5.1, on a layer and on an
+// object alike; 1.5.1's switch from srcOrigin* to src* changed nothing,
+// both being flipped the same way. So the layout y range is taken top-down,
+// whichever way round it arrives. WebGPU does not swap, and its
+// c3_getLayoutPos is untouched by this.
 vec2 c3Layout(vec2 uv, out vec2 uvPerLayout){
-    vec2 srcSpan = srcOriginEnd - srcOriginStart;
-    vec2 layoutSpan = layoutEnd - layoutStart;
+    vec2 srcSpan = srcEnd - srcStart;
+    vec2 layoutTop = vec2(layoutStart.x, min(layoutStart.y, layoutEnd.y));
+    vec2 layoutSpan = vec2(layoutEnd.x - layoutStart.x, abs(layoutEnd.y - layoutStart.y));
     if (abs(srcSpan.x) > 1e-5 && abs(srcSpan.y) > 1e-5
-        && abs(layoutSpan.x) > 1e-3 && abs(layoutSpan.y) > 1e-3){
-        vec2 p = mix(layoutStart, layoutEnd, (uv - srcOriginStart) / srcSpan);
+        && abs(layoutSpan.x) > 1e-3 && layoutSpan.y > 1e-3){
+        vec2 p = layoutTop + layoutSpan * ((uv - srcStart) / srcSpan);
         if (max(abs(p.x), abs(p.y)) < 1.0e7){
             uvPerLayout = srcSpan / layoutSpan;
             return p;
